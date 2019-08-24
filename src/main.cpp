@@ -19,7 +19,6 @@
 #define P_B 23
 #define P_C 18
 #define P_D 5
-#define P_E 15
 #define P_OE 2
 
 #define display_draw_time 0
@@ -197,6 +196,9 @@ void processAudioUpdate(void *arg) {
 TaskHandle_t render_task;
 void render(void *arg);
 
+TaskHandle_t draw_task;
+void draw(void *arg);
+
 TaskHandle_t server_task;
 void serve(void *arg);
 
@@ -220,6 +222,16 @@ void setup() {
   );
 
   xTaskCreatePinnedToCore(
+    draw,
+    "draw",
+    8000,
+    NULL,
+    1,
+    &draw_task,
+    1
+  );
+
+  xTaskCreatePinnedToCore(
     processAudioUpdate,
     "audioUpdate",
     24000,
@@ -236,7 +248,7 @@ void setup() {
     NULL,
     2,
     &server_task,
-    0
+    1
   );
   // serve(NULL);
 
@@ -338,6 +350,16 @@ void render(void *arg) {
     // }
 
     vTaskDelay(1);
+  }
+}
+
+void draw(void *arg) {
+  while (!renderer) {
+    vTaskDelay(10);
+  }
+
+  for (;;) {
+    Render3Write(renderer);
   }
 }
 
