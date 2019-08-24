@@ -65,6 +65,7 @@ typedef struct {
     int displayHeight;
     Render3_Params_t *params;
     ColorParams_t *colorParams;
+    
     int renderCount;
     long lastRender;
     float fps;
@@ -73,6 +74,10 @@ typedef struct {
     long colorTime;
     long drawTime;
     long writeTime;
+
+    Color_ABGRf **buffer;
+    int currentBuffer;
+    QueueHandle_t bufferReady;
 
     void (*setPixel) (int x, int y, Color_ABGR c);
     void (*show) (void);
@@ -90,5 +95,6 @@ RenderMode3_t *NewRender3(
 );
 
 void Render3(RenderMode3_t *r, FS_Drivers_t *drivers);
+void Render3Write(RenderMode3_t *r);
 
 // #endif

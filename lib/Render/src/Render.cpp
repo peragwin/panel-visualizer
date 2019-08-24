@@ -194,6 +194,15 @@ RenderMode3_t *NewRender3(
         }
     }
 
+    int dsize = displayWidth * displayHeight / 4;
+    r->buffer = (Color_ABGRf**)malloc(2*sizeof(Color_ABGRf*));
+    r->buffer[0] = (Color_ABGRf*)malloc(dsize*sizeof(Color_ABGRf));
+    r->buffer[1] = (Color_ABGRf*)malloc(dsize*sizeof(Color_ABGRf));
+    r->currentBuffer = 0;
+
+    QueueHandle_t bufferReady = xQueueCreate(4, sizeof(int));
+    r->bufferReady = bufferReady;
+
     return r;
 }
 
@@ -250,7 +259,7 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
     }
 
     int dsize = r->displayWidth * r->displayHeight / 4;
-    Color_ABGRf buffer[dsize];
+    Color_ABGRf *buffer = r->buffer[r->currentBuffer^=1];
     for (int i = 0; i < dsize; i++) {
         Color_ABGRf c = {0,0,0,0};
         buffer[i] = c;
@@ -329,8 +338,19 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
     }
 
     r->drawTime = micros() - now - r->initTime;
+    xQueueSend(r->bufferReady, &r->currentBuffer, 1);
 
     // Serial.println("render ln 298");
+}
+
+void Render3Write(RenderMode3_t *r) {
+    int currentBuffer;
+    bool rx = xQueueReceive(r->bufferReady, &currentBuffer, 100);
+    if (!rx) return;
+
+    long now = micros();
+
+    Color_ABGRf *buffer = r->buffer[currentBuffer];
 
     int yo = r->displayHeight/2;
     int xo = r->displayWidth/2;
@@ -363,7 +383,7 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
         }
     }
 
-    r->writeTime = micros() - now - r->initTime - r->drawTime;
+    r->writeTime = micros() - now;
 
     // Serial.println("render ln 318");
 
