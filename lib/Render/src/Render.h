@@ -106,7 +106,6 @@ RenderMode3_t *NewRender3(
 
 void Render3(RenderMode3_t *r, FS_Drivers_t *drivers);
 void Render3Write(RenderMode3_t *r);
-void Render3Left(RenderMode3_t *r, FS_Drivers_t *drivers);
-void Render3Right(RenderMode3_t *r, FS_Drivers_t *drivers);
+void Render3Subtask(RenderMode3_t *r, int taskNum, FS_Drivers_t *drivers);
 
 // #endif

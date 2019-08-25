@@ -6,18 +6,10 @@
 #include "Arduino.h"
 #include <math.h>
 
-RenderMode2_t* NewRender2(Render2Params_t *params, ColorParams_t *colorParams, int size, int length,
-    void (*setPixel) (int x, int y, Color_ABGR c)) {
-
-    RenderMode2_t *r = (RenderMode2_t*)malloc(sizeof(RenderMode2_t));
-    r->params = params;
-    r->colorParams = colorParams;
-    r->size = size;
-    r->length = length;
-    r->_setPixel = setPixel;
-
-    return r;
-}
+#define WRITE_SEMI_TIMEOUT 6000
+#define RENDER_TASK_TIMEOUT 1000
+#define RENDER_SYNC_TIMEOUT 2000
+#define WRITE_QUEUE_TIMEOUT 3000
 
 static float sigmoid(float x) {
     float a = x;
@@ -110,8 +102,8 @@ RenderMode3_t *NewRender3(
     Render3_GridPoint_t *points = (Render3_GridPoint_t*)malloc(psize * sizeof(Render3_GridPoint_t));
     for (int x = 0; x < columns; x++) {
         for (int y = 0; y < rows; y++) {
-            float xf = (float)x / (float)displayWidth;
-            float yf = (float)y / (float)displayHeight * params->aspect;
+            float xf = (float)x / (float)columns; //displayWidth //* params->aspectX;
+            float yf = (float)y / (float)rows; //displayHeight //* params->aspectY;
             Render3_GridPoint_t p = {
                 .x = xf,
                 .y = yf,
@@ -221,7 +213,7 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
     int currentBuffer = r->currentBuffer^1;
 
 // Serial.println("gonna take the semmi");
-    if ( xSemaphoreTake(currentBufferLock[currentBuffer], 100) == pdFALSE ) {
+    if ( xSemaphoreTake(currentBufferLock[currentBuffer], WRITE_SEMI_TIMEOUT ) == pdFALSE ) {
         Serial.println("timeout waiting for current buffer sem");
         return;
     }
@@ -242,7 +234,7 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
     xQueueSend(startDraw, &currentBuffer, 1);
     xQueueSend(startDraw, &currentBuffer, 1);
 
-    EventBits_t sync = xEventGroupSync(drawDisplayGroup, 1, 7, 100);
+    EventBits_t sync = xEventGroupSync(drawDisplayGroup, 1, 7, RENDER_SYNC_TIMEOUT);
     if ((sync & 7) != 7) {
         xSemaphoreGive(currentBufferLock[currentBuffer]);
         Serial.println("failed to sync subrenders");
@@ -251,7 +243,7 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
 
     r->drawTime = micros() - now - r->initTime;
 
-    if ( xQueueSend(startWrite, &currentBuffer, 100) != pdTRUE ) {
+    if ( xQueueSend(startWrite, &currentBuffer, RENDER_TASK_TIMEOUT) != pdTRUE ) {
         xSemaphoreGive(currentBufferLock[currentBuffer]);
         Serial.println("failed to send write semi");
     }
@@ -327,54 +319,39 @@ void Render3Inner(RenderMode3_t *r, int start, int end, int currentBuffer, FS_Dr
     }
 }
 
-void Render3Left(RenderMode3_t *r, FS_Drivers_t *drivers) {
+void Render3Subtask(RenderMode3_t *r, int taskNum, FS_Drivers_t *drivers) {
+    int currentBuffer;
     long now = micros();
 
-    int currentBuffer;
-    if ( xQueueReceive(startDraw, &currentBuffer, 100) == pdFALSE ) {
-        //xEventGroupSync(r->drawDisplayGroup, 2, 0, 100);
-        xEventGroupSetBits(drawDisplayGroup, 7);
-        Serial.println("timeout waiting for subrender left");
-        return;
+    if ( xQueueReceive(startDraw, &currentBuffer, RENDER_TASK_TIMEOUT) == pdFALSE ) {
+        Serial.printf("timeout waiting in subrender %d\n", taskNum);
+    } else {
+
+        if (taskNum == 0) {
+            r->queueLeftTime = (micros() - now + r->queueLeftTime) / 2;
+        } else {
+            r->queueRightTime = (micros() - now + r->queueRightTime) / 2;
+        }
+
+        int rsize = r->rows * r->columns;
+        int split = rsize / 2;
+
+        Render3Inner(r, (taskNum == 0 ? 0 : split), (taskNum == 0 ? split : rsize), currentBuffer, drivers);
+
+        if (taskNum == 0) {
+            r->processLeftTime = (micros() - now - r->queueLeftTime + r->processLeftTime) / 2;
+        } else {
+            r->processRightTime = (micros() - now - r->queueRightTime + r->processRightTime) / 2;
+        }
     }
 
-    r->queueLeftTime = (micros() - now + r->queueLeftTime) / 2;
-
-    int rsize = r->rows * r->columns;
-    int end = rsize / 2;
-    Render3Inner(r, 0, end, currentBuffer, drivers);
-
-    r->processLeftTime = (micros() - now - r->queueLeftTime + r->processLeftTime) / 2;
-
-    xEventGroupSync(drawDisplayGroup, 2, 7, 100);
-}
-
-void Render3Right(RenderMode3_t *r, FS_Drivers_t *drivers) {
-    long now = micros();
-
-    int currentBuffer;
-    if ( xQueueReceive(startDraw, &currentBuffer, 100) == pdFALSE ) {
-        // xEventGroupSync(r->drawDisplayGroup, 4, 0, 100);
-        xEventGroupSetBits(drawDisplayGroup, 7);
-        Serial.println("timeout waiting for subrender right");
-        return;
-    }
-
-    r->queueRightTime = (micros() - now + r->queueRightTime) / 2;
-
-    int rsize = r->rows * r->columns;
-    int start = rsize / 2;
-    Render3Inner(r, start, rsize, currentBuffer, drivers);
-
-    r->processRightTime = (micros() - now - r->queueRightTime + r->processRightTime) / 2;
-
-    xEventGroupSync(drawDisplayGroup, 4, 7, 100);
+    xEventGroupSync(drawDisplayGroup, 1 << (taskNum+1), 7, RENDER_SYNC_TIMEOUT);
 }
 
 void Render3Write(RenderMode3_t *r) {
     int currentBuffer;
 
-    if ( xQueueReceive(startWrite, &currentBuffer, 100) == pdFALSE ) {
+    if ( xQueueReceive(startWrite, &currentBuffer, WRITE_QUEUE_TIMEOUT) == pdFALSE ) {
         xSemaphoreGive(currentBufferLock[0]);
         xSemaphoreGive(currentBufferLock[1]);
         Serial.println("timeout waiting to write");
