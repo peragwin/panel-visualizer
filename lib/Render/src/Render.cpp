@@ -47,7 +47,7 @@ static Color_ABGRf get_hsv(ColorParams_t *params, float amp, float phase, float 
 
     // float sat = sigmoid(ss * amp + so);
     float val = ss * sigmoid(vs * amp + vo) + so;
-    float alp = sigmoid(as * amp + ao);
+    float alp = 0;//sigmoid(as * amp + ao);
 
     double r, g, b;
     if (params->clut == NULL) {
@@ -141,6 +141,18 @@ void Render2(RenderMode2_t *r, FS_Drivers_t *drivers) {
     }
 }
 
+QueueHandle_t startDraw;// = xQueueCreate(4, sizeof(int));
+// r->startDraw = startDraw;
+QueueHandle_t startWrite;// = xQueueCreate(4, sizeof(int));
+// r->startWrite = startWrite;
+EventGroupHandle_t drawDisplayGroup;// = xEventGroupCreate();
+// r->drawDisplayGroup = drawGroup;
+SemaphoreHandle_t cb0;// = xSemaphoreCreateMutex();
+SemaphoreHandle_t cb1;// = xSemaphoreCreateMutex();
+SemaphoreHandle_t currentBufferLock[2] = {cb0, cb1};
+// r->currentBufferLock[0] = cb0;
+// r->currentBufferLock[1] = cb1;
+
 RenderMode3_t *NewRender3(
     int displayWidth,
     int displayHeight,
@@ -149,7 +161,7 @@ RenderMode3_t *NewRender3(
     Render3_Params_t *params,
     ColorParams_t *colorParams,
     void (*setPixel) (int x, int y, Color_ABGR c),
-    void (*show) (void)
+    void (*show) (int currentBuffer)
 ) {
     RenderMode3_t *r = (RenderMode3_t *)malloc(sizeof(RenderMode3_t));
     r->displayWidth = displayWidth;
@@ -162,7 +174,17 @@ RenderMode3_t *NewRender3(
     r->setPixel = setPixel;
     r->renderCount = 0;
 
+    r->queueLeftTime = 0;
+    r->queueRightTime = 0;
+    r->processLeftTime = 0;
+    r->processRightTime = 0;
+    r->lastRender = xTaskGetTickCount();
+
     int psize = rows * columns;
+
+    float *scales = (float*)malloc(psize * sizeof(float));
+    r->scales = scales;
+
     Render3_GridPoint_t *points = (Render3_GridPoint_t*)malloc(psize * sizeof(Render3_GridPoint_t));
     for (int x = 0; x < columns; x++) {
         for (int y = 0; y < rows; y++) {
@@ -200,8 +222,18 @@ RenderMode3_t *NewRender3(
     r->buffer[1] = (Color_ABGRf*)malloc(dsize*sizeof(Color_ABGRf));
     r->currentBuffer = 0;
 
-    QueueHandle_t bufferReady = xQueueCreate(4, sizeof(int));
-    r->bufferReady = bufferReady;
+     startDraw = xQueueCreate(4, sizeof(int));
+    //r->startDraw = startDraw;
+    startWrite = xQueueCreate(4, sizeof(int));
+    //r->startWrite = startWrite;
+    drawDisplayGroup = xEventGroupCreate();
+    //r->drawDisplayGroup = drawGroup;
+    currentBufferLock[0] = xSemaphoreCreateBinary();
+    xSemaphoreGive(currentBufferLock[0]);
+    currentBufferLock[1] = xSemaphoreCreateBinary();
+    xSemaphoreGive(currentBufferLock[1]);
+    //r->currentBufferLock[0] = cb0;
+    //r->currentBufferLock[1] = cb1;
 
     return r;
 }
@@ -241,13 +273,18 @@ Render3_GridPoint_t Render3_ApplyWarp(Render3_GridPoint_t *g, float w, float s) 
 }
 
 void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
+    // vTaskDelayUntil(&(r->lastRender), 10);
+
+    // Serial.println("star render3");
+
     r->renderCount++;
     long now = micros();
     r->fps = 1000000. / ((float)now - (float)r->lastRender);
     r->lastRender = now;
 
+    // Serial.println("line 283");
+
     // todo: optimize this by calculating it in freq sensor once for new frames and then decay
-    float scales[r->columns];
     for (int i = 0; i < r->columns; i++) {
         float s = 0;
         for (int j = 0; j < r->rows; j++) {
@@ -255,29 +292,58 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
             s += (amps[j]) * drivers->scales[j];
         }
         s /= r->rows;
-        scales[i] = s;
+        r->scales[i] = s;
     }
 
     int dsize = r->displayWidth * r->displayHeight / 4;
-    Color_ABGRf *buffer = r->buffer[r->currentBuffer^=1];
+    int currentBuffer = r->currentBuffer^1;
+
+// Serial.println("gonna take the semmi");
+    if ( xSemaphoreTake(currentBufferLock[currentBuffer], 100) == pdFALSE ) {
+        Serial.println("timeout waiting for current buffer sem");
+        return;
+    }
+
+    Color_ABGRf *buffer = r->buffer[currentBuffer];
+    r->currentBuffer = currentBuffer;
+
     for (int i = 0; i < dsize; i++) {
         Color_ABGRf c = {0,0,0,0};
         buffer[i] = c;
     }
 
+    r->initTime = micros() - now;
+
+// Serial.println("about to clear group bits");
+    xEventGroupClearBits(drawDisplayGroup, 7);
+
+    xQueueSend(startDraw, &currentBuffer, 1);
+    xQueueSend(startDraw, &currentBuffer, 1);
+
+    EventBits_t sync = xEventGroupSync(drawDisplayGroup, 1, 7, 100);
+    if ((sync & 7) != 7) {
+        Serial.println("failed to sync subrenders");
+        return;
+    }
+
+    r->drawTime = micros() - now - r->initTime;
+
+    if ( xQueueSend(startWrite, &currentBuffer, 100) != pdTRUE ) {
+        Serial.println("failed to send write semi");
+        xSemaphoreGive(currentBufferLock[currentBuffer]);
+    }
+}
+
+void Render3Inner(RenderMode3_t *r, int start, int end, int currentBuffer, FS_Drivers_t *drivers) {
     float warpScale =  r->params->warpScale;
     float warpOffset = r->params->warpOffset;
     float scaleScale = r->params->scaleScale;
     float scaleOffset = r->params->scaleOffset;
 
-    int rsize = r->rows * r->columns;
-
-    // Serial.println("render ln 256");
-
-    r->initTime = micros() - now;
+    Color_ABGRf *buffer = r->buffer[currentBuffer];
 
     long nowl;
-    for (int i = 0; i < rsize; i++) {
+    for (int i = start; i < end; i++) {
         Render3_GridPoint_t g = r->points[i];
 
         nowl = micros();
@@ -285,7 +351,7 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
         int wi = g.srcY; // r->rows - 1 - g.srcY;
         float warp = warpScale * drivers->diff[wi] + warpOffset;
         int si = g.srcX; // r->columns - 1 - g.srcX;
-        float scale = scaleScale * scales[si] + scaleOffset;
+        float scale = scaleScale * r->scales[si] + scaleOffset;
         Render3_GridPoint_t p = Render3_ApplyWarp(&g, warp, scale);
         int x, y;
         Render3_GetDisplayXY(&p, r->displayWidth/2, r->displayHeight/2, &x, &y);
@@ -336,56 +402,103 @@ void Render3(RenderMode3_t *r, FS_Drivers_t *drivers) {
 
         r->colorTime = (micros() - nowl - r->warpTime + r->colorTime) / 2;
     }
+}
 
-    r->drawTime = micros() - now - r->initTime;
-    xQueueSend(r->bufferReady, &r->currentBuffer, 1);
+void Render3Left(RenderMode3_t *r, FS_Drivers_t *drivers) {
+    long now = micros();
 
-    // Serial.println("render ln 298");
+    int currentBuffer;
+    if ( xQueueReceive(startDraw, &currentBuffer, 100) == pdFALSE ) {
+        Serial.println("timeout waiting for subrender left");
+        //xEventGroupSync(r->drawDisplayGroup, 2, 0, 100);
+        xEventGroupSetBits(drawDisplayGroup, 7);
+        return;
+    }
+
+    r->queueLeftTime = (micros() - now + r->queueLeftTime) / 2;
+
+    int rsize = r->rows * r->columns;
+    int end = rsize / 2;
+    Render3Inner(r, 0, end, currentBuffer, drivers);
+
+    r->processLeftTime = (micros() - now - r->queueLeftTime + r->processLeftTime) / 2;
+
+    xEventGroupSync(drawDisplayGroup, 2, 7, 100);
+}
+
+void Render3Right(RenderMode3_t *r, FS_Drivers_t *drivers) {
+    long now = micros();
+
+    int currentBuffer;
+    if ( xQueueReceive(startDraw, &currentBuffer, 100) == pdFALSE ) {
+        Serial.println("timeout waiting for subrender right");
+        // xEventGroupSync(r->drawDisplayGroup, 4, 0, 100);
+        xEventGroupSetBits(drawDisplayGroup, 7);
+        return;
+    }
+
+    r->queueRightTime = (micros() - now + r->queueRightTime) / 2;
+
+    int rsize = r->rows * r->columns;
+    int start = rsize / 2;
+    Render3Inner(r, start, rsize, currentBuffer, drivers);
+
+    r->processRightTime = (micros() - now - r->queueRightTime + r->processRightTime) / 2;
+
+    xEventGroupSync(drawDisplayGroup, 4, 7, 100);
 }
 
 void Render3Write(RenderMode3_t *r) {
     int currentBuffer;
-    bool rx = xQueueReceive(r->bufferReady, &currentBuffer, 100);
-    if (!rx) return;
+
+    if ( xQueueReceive(startWrite, &currentBuffer, 100) == pdFALSE ) {
+        Serial.println("timeout waiting to write");
+        xSemaphoreGive(currentBufferLock[0]);
+        xSemaphoreGive(currentBufferLock[1]);
+        return;
+    }
 
     long now = micros();
 
-    Color_ABGRf *buffer = r->buffer[currentBuffer];
+    // Color_ABGRf *buffer = r->buffer[currentBuffer];
 
-    int yo = r->displayHeight/2;
-    int xo = r->displayWidth/2;
-    for (int x = 0; x < r->displayWidth/2; x++) {
-        for (int y = 0; y < r->displayHeight/2; y++) {
-            int bidx = x + y * r->displayWidth/2;
-            Color_ABGRf cf = buffer[bidx];
-            Color_ABGR c;
+    // int yo = r->displayHeight/2;
+    // int xo = r->displayWidth/2;
+    // for (int x = 0; x < r->displayWidth/2; x++) {
+    //     for (int y = 0; y < r->displayHeight/2; y++) {
+    //         int bidx = x + y * r->displayWidth/2;
+    //         Color_ABGRf cf = buffer[bidx];
+    //         Color_ABGR c;
 
-            c.a = (char)(255 * cf.a);
-            c.b = (char)(255 * cf.b);
-            c.g = (char)(255 * cf.g);
-            c.r = (char)(255 * cf.r);
+    //         c.a = (char)(255 * cf.a);
+    //         c.b = (char)(255 * cf.b);
+    //         c.g = (char)(255 * cf.g);
+    //         c.r = (char)(255 * cf.r);
 
-            // Serial.print("pixel ");
-            // Serial.print(x);
-            // Serial.print(", ");
-            // Serial.print(x);
-            // Serial.print(", ");
-            // Serial.print(cf.r);
-            // Serial.print(", ");
-            // Serial.print(cf.g);
-            // Serial.print(", ");
-            // Serial.println(cf.b);
+    //         // Serial.print("pixel ");
+    //         // Serial.print(x);
+    //         // Serial.print(", ");
+    //         // Serial.print(x);
+    //         // Serial.print(", ");
+    //         // Serial.print(cf.r);
+    //         // Serial.print(", ");
+    //         // Serial.print(cf.g);
+    //         // Serial.print(", ");
+    //         // Serial.println(cf.b);
 
-            r->setPixel(xo+x, yo+y, c);
-            r->setPixel(xo-1-x, yo+y, c);
-            r->setPixel(xo+x, yo-1-y, c);
-            r->setPixel(xo-1-x, yo-1-y, c);
-        }
-    }
+    //         r->setPixel(xo+x, yo+y, c);
+    //         r->setPixel(xo-1-x, yo+y, c);
+    //         r->setPixel(xo+x, yo-1-y, c);
+    //         r->setPixel(xo-1-x, yo-1-y, c);
+    //     }
+    // }
+
+
+    // // Serial.println("render ln 318");
+
+    r->show(currentBuffer);
 
     r->writeTime = micros() - now;
 
-    // Serial.println("render ln 318");
-
-    r->show();
+    xSemaphoreGive(currentBufferLock[currentBuffer]);
 }
