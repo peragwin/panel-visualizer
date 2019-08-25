@@ -131,7 +131,7 @@ void startI2S() {
 }
 
 #define NUM_BUCKETS 16
-#define NUM_FRAMES 60
+#define NUM_FRAMES 32
 
 Audio_Processor_t *audioProcessor;
 int rawBuffer[AUDIO_INPUT_FRAME_SIZE*2];
@@ -178,8 +178,8 @@ void processAudioUpdate(void *arg) {
 }
 
 TaskHandle_t render_task;
-TaskHandle_t subRender1;
-TaskHandle_t subRender2;
+TaskHandle_t renderLeftTask;
+TaskHandle_t renderRightTask;
 void render(void *arg);
 void renderLeft(void *arg);
 void renderRight(void *arg);
@@ -222,7 +222,7 @@ void setup() {
     8000,
     NULL,
     5,
-    &subRender1,
+    &renderLeftTask,
     1
   );
 
@@ -232,7 +232,7 @@ void setup() {
     8000,
     NULL,
     5,
-    &subRender2,
+    &renderRightTask,
     0
   );
 
@@ -295,10 +295,12 @@ void showDisplay(int currentBuffer) {
   }
   // for (int i = 0; i < DISPLAY_BUFFER_SIZE / 128; i++) {
     digitalWrite(4, LOW);
-    vTaskDelay(1);
+    delayMicroseconds(1);
     SPI.writeBytes((uint8_t*)displayBuffer, DISPLAY_BUFFER_SIZE);
     digitalWrite(4, HIGH);
   // }
+
+  vTaskDelay(1);
 }
 void setPixel(int x, int y, Color_ABGR c) {
   // display.drawPixel(x, y, display.color565(c.r, c.g, c.b));
@@ -363,7 +365,7 @@ void renderLeft(void *arg) {
   }
 
   for (;;) {
-    Render3Left(renderer, audioProcessor->fs->drivers);
+    Render3Subtask(renderer, 0, audioProcessor->fs->drivers);
   }
 }
 
@@ -373,7 +375,7 @@ void renderRight(void *arg) {
   }
 
   for (;;) {
-    Render3Right(renderer, audioProcessor->fs->drivers);
+    Render3Subtask(renderer, 1, audioProcessor->fs->drivers);
   }
 }
 
