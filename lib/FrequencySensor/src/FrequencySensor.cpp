@@ -43,6 +43,7 @@ FS_Drivers_t* NewDrivers(int size, int columns) {
     d->bass = 0;
     d->size = size;
     d->length = columns;
+    d->columnIdx = 0;
     
     return d;
 }
@@ -67,13 +68,13 @@ FS_GainController_t* NewGainController(int size, float *filterParams, float kp, 
 FS_Module_t* NewFrequencySensor(int size, int columns) {
 
     FS_Config_t *config = (FS_Config_t*)malloc(sizeof(FS_Config_t));
-    config->offset = 0;
-    config->gain = 4;
-    config->diffGain = 0.05;
-    config->diffAbs = 0;
-    config->sync = 1e-3;
+    config->offset = 0.25;
+    config->gain = 8;
+    config->diffGain = 0.1;
+    config->diffAbs = 0.5;
+    config->sync = 5e-3;
     config->mode = 1;
-    config->preemph = 1;
+    config->preemph = 4;
     config->columnDivider = 1;
 
     float gainParams[2] = {
@@ -82,12 +83,12 @@ FS_Module_t* NewFrequencySensor(int size, int columns) {
     Filter_t *gainFilter = NewFilter(size, gainParams, 2);
 
     float gainFeedbackP[2] = {
-        -0.0005, 0.9995,
+        -0.001, 0.999,
     };
     Filter_t *gainFeedback = NewFilter(size, gainFeedbackP, 2);
 
     float diffParams[2] = {
-        0.263, .737,
+        0.05, .95,
     };
     Filter_t *diffFilter = NewFilter(size, diffParams, 2);
 
@@ -97,8 +98,8 @@ FS_Module_t* NewFrequencySensor(int size, int columns) {
     Filter_t *diffFeedback = NewFilter(size, diffFeedbackP, 2);
 
     float scaleParams[4] = {
-        0.05, 0.95,
-        0.05, 0.95,
+        0.001, 0.999,
+        0.005, 0.995,
     };
     Filter_t *scaleFilter = NewFilter(size, scaleParams, 4);
     for (int i = 0; i < size; i++) {

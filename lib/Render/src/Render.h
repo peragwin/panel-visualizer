@@ -2,6 +2,7 @@
 
 #include <FrequencySensor.h>
 #include "color.h"
+#include <FreeRTOS.h>
 
 typedef struct {
     float valueScale;
@@ -65,22 +66,31 @@ typedef struct {
     int displayHeight;
     Render3_Params_t *params;
     ColorParams_t *colorParams;
+
+    float *scales;
     
     int renderCount;
-    long lastRender;
+    TickType_t lastRender;
     float fps;
     long initTime;
     long warpTime;
     long colorTime;
     long drawTime;
     long writeTime;
+    long queueLeftTime;
+    long queueRightTime;
+    long processLeftTime;
+    long processRightTime;
 
     Color_ABGRf **buffer;
     int currentBuffer;
-    QueueHandle_t bufferReady;
+    // QueueHandle_t startDraw;
+    // QueueHandle_t startWrite;
+    // EventGroupHandle_t drawDisplayGroup;
+    // SemaphoreHandle_t currentBufferLock[2];
 
     void (*setPixel) (int x, int y, Color_ABGR c);
-    void (*show) (void);
+    void (*show) (int currentBuffer);
 } RenderMode3_t;
 
 RenderMode3_t *NewRender3(
@@ -91,10 +101,12 @@ RenderMode3_t *NewRender3(
     Render3_Params_t *params,
     ColorParams_t *colorParams,
     void (*setPixel) (int x, int y, Color_ABGR c),
-    void (*show) (void)
+    void (*show) (int currentBuffer)
 );
 
 void Render3(RenderMode3_t *r, FS_Drivers_t *drivers);
 void Render3Write(RenderMode3_t *r);
+void Render3Left(RenderMode3_t *r, FS_Drivers_t *drivers);
+void Render3Right(RenderMode3_t *r, FS_Drivers_t *drivers);
 
 // #endif

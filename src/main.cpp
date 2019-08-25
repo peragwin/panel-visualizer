@@ -1,38 +1,41 @@
 #include <Arduino.h>
 #include "FreeRTOS.h"
-#define PxMATRIX_SPI_SPEED 30000000
-#define PxMATRIX_COLOR_DEPTH 16
-#include <PxMatrix.h>
+// #define PxMATRIX_SPI_SPEED 30000000
+// #define PxMATRIX_COLOR_DEPTH 16
+// #include <PxMatrix.h>
 #include <driver/i2s.h>
 #include <I2S.h>
+#include <SPI.h>
 #include <WindowBuffer.h>
 #include <FrequencySensor.h>
 #include <Render.h>
+#include <color.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncJson.h>
 #include <ArduinoJson.h>
 
-#define P_LAT 22
-#define P_A 19
-#define P_B 23
-#define P_C 18
-#define P_D 5
-#define P_OE 2
+// #define P_LAT 22
+// #define P_A 19
+// #define P_B 23
+// #define P_C 18
+// #define P_D 5
+// #define P_OE 2
 
-#define display_draw_time 0
-#define SCAN_RATE 16
+// #define display_draw_time 0
+// #define SCAN_RATE 16
+
+#define DISPLAY_WIDTH 64
+#define DISPLAY_HEIGHT 32
+#define DISPLAY_BUFFER_SIZE (DISPLAY_WIDTH * DISPLAY_HEIGHT * 3 / 4)
 
 #define I2S_NUM I2S_NUM_0
 #define I2S_BCK 26
 #define I2S_WS 25
 #define I2S_SD 27
 
-hw_timer_t * timer = NULL;
-portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
-
-PxMATRIX display(64,32,P_LAT, P_OE,P_A,P_B,P_C,P_D);
+// PxMATRIX display(64,32,P_LAT, P_OE,P_A,P_B,P_C,P_D);
 
 // void IRAM_ATTR display_updater(){
 //   // Increment the counter and set the time of ISR
@@ -41,32 +44,35 @@ PxMATRIX display(64,32,P_LAT, P_OE,P_A,P_B,P_C,P_D);
 //   portEXIT_CRITICAL_ISR(&timerMux);
 // }
 
-long lastDisplay = 0;
-float displayFps = 0;
+// long lastDisplay = 0;
+// float displayFps = 0;
 
-void display_update_enable(bool is_enable)
-{
-  if (is_enable)
-  {
-  for (;;) {
+// void display_update_enable(bool is_enable)
+// {
+//   if (is_enable)
+//   {
+//   for (;;) {
 
-    display.display(0);
+//     display.display(0);
 
-    long now = micros();
-    displayFps = 1000000. / ((float)now - (float)lastDisplay);
-    lastDisplay = now;
-    // timer = timerBegin(0, 40, true);
-    // timerAttachInterrupt(timer, &display_updater, true);
-    // timerAlarmWrite(timer, 1000, true);
-    // timerAlarmEnable(timer);
-  }
-  // else
-  // {
-  //   timerDetachInterrupt(timer);
-  //   timerAlarmDisable(timer);
-  // }
-  }
-}
+//     long now = micros();
+//     displayFps = 1000000. / ((float)now - (float)lastDisplay);
+//     lastDisplay = now;
+//     // timer = timerBegin(0, 40, true);
+//     // timerAttachInterrupt(timer, &display_updater, true);
+//     // timerAlarmWrite(timer, 1000, true);
+//     // timerAlarmEnable(timer);
+//   }
+//   // else
+//   // {
+//   //   timerDetachInterrupt(timer);
+//   //   timerAlarmDisable(timer);
+//   // }
+//   }
+// }
+
+SPIClass vspi(VSPI);
+Color_RGB8 displayBuffer[DISPLAY_BUFFER_SIZE];
 
 void HandleESPError(esp_err_t err, String msg) {
   if (err != ESP_OK) {
@@ -129,6 +135,7 @@ void startI2S() {
 
 Audio_Processor_t *audioProcessor;
 int rawBuffer[AUDIO_INPUT_FRAME_SIZE*2];
+long processTime = 0;
 
 TaskHandle_t audioUpdateTask;
 void processAudioUpdate(void *arg) {
@@ -140,61 +147,42 @@ void processAudioUpdate(void *arg) {
 
   audioProcessor = NewAudioProcessor(AUDIO_BUFFER_SIZE, NUM_BUCKETS, NUM_FRAMES, NULL);
 
-  // startI2S();
+
   setupI2S();
+
+  TickType_t xlastWakeTime = xTaskGetTickCount();
   
   for (;;) {
-    // int dmaBufferOffset;
-    // int rx = xQueueReceive(audioReady, &dmaBufferOffset, 4);
-    // if (!rx) continue;
 
-    // Serial.println("RX AUDIO!");
-
-    // i2sHandle->getRXAudio(dmaBufferOffset, 2*AUDIO_BUFFER_SIZE/AUDIO_INPUT_FRAME_SIZE, CHANNEL_NUMBER,
-    //   audioBuffer);
     size_t bytesRead;
     HandleESPError(
       i2s_read(I2S_NUM, rawBuffer, 4*2*AUDIO_INPUT_FRAME_SIZE, &bytesRead, (size_t)(AUDIO_INPUT_FRAME_SIZE / 48)),
-      "failed to rx i2s");
-
-    vTaskDelay(AUDIO_INPUT_FRAME_SIZE / 48);
-
+        "failed to rx i2s");
     if (!bytesRead) continue;
 
-    // Serial.print("RX AUDI0! ");
-    // Serial.println(bytesRead);
+    vTaskDelayUntil(&xlastWakeTime, AUDIO_INPUT_FRAME_SIZE / 48);
 
-    // Serial.println(rawBuffer[0]);
+    long now = micros();
 
-    // Serial.print("raw = [");
     for (int i = CHANNEL_NUMBER; i < 2*AUDIO_INPUT_FRAME_SIZE; i+=2) {
-      // Serial.print(rawBuffer[i]);
-      // Serial.print(", ");
       convBuffer[i/2] = (float)(rawBuffer[i] >> 8);
     }
-    // Serial.println("]");
-
-    //   Serial.println("FRrame:");
-    // for (int i = 0; i < AUDIO_INPUT_FRAME_SIZE; i+=(AUDIO_INPUT_FRAME_SIZE/16)) {
-    //     Serial.print(convBuffer[i]);
-    //     Serial.print(", ");
-    // }
-    // Serial.println("rx audio");
-    // Serial.println(bytesRead);
 
     audioBuffer->push(convBuffer, AUDIO_INPUT_FRAME_SIZE);
     audioBuffer->get(frame, AUDIO_BUFFER_SIZE);
 
-    // long m = micros();
     Audio_Process(audioProcessor, frame);
-    // Serial.print("process took ");
-    // Serial.println(micros() - m);
 
+    processTime = micros() - now;
   }
 }
 
 TaskHandle_t render_task;
+TaskHandle_t subRender1;
+TaskHandle_t subRender2;
 void render(void *arg);
+void renderLeft(void *arg);
+void renderRight(void *arg);
 
 TaskHandle_t draw_task;
 void draw(void *arg);
@@ -204,27 +192,54 @@ void serve(void *arg);
 
 void setup() {
   Serial.begin(115200);
+  
+  SPI.setDataMode(SPI_MODE0);
+  SPI.setBitOrder(MSBFIRST);
+  // SPI.setHwCs(true);
+  SPI.setFrequency(8000000);
+  SPI.begin(14, 12, 13, 4);
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);
 
-  display.begin(SCAN_RATE);
-  display.setCursor(0,0);
-  display.print("Hello World");
-  display.setBrightness(255);
-  display.setFastUpdate(true);
+  // display.begin(SCAN_RATE);
+  // display.setCursor(0,0);
+  // display.print("Hello World");
+  // display.setBrightness(255);
+  // display.setFastUpdate(true);
 
-  xTaskCreatePinnedToCore(
+  xTaskCreate(
     render,
     "render",
-    24000,
+    8000,
     NULL,
-    1,
-    &render_task,
+    6,
+    &render_task
+  );
+
+  xTaskCreatePinnedToCore(
+    renderLeft,
+    "renderLeft",
+    8000,
+    NULL,
+    5,
+    &subRender1,
+    1
+  );
+
+  xTaskCreatePinnedToCore(
+    renderRight,
+    "renderRight",
+    8000,
+    NULL,
+    5,
+    &subRender2,
     0
   );
 
   xTaskCreatePinnedToCore(
     draw,
     "draw",
-    8000,
+    16000,
     NULL,
     1,
     &draw_task,
@@ -238,7 +253,7 @@ void setup() {
     NULL,
     4,
     &audioUpdateTask,
-    1
+    0
   );
 
   xTaskCreatePinnedToCore(
@@ -248,52 +263,70 @@ void setup() {
     NULL,
     2,
     &server_task,
-    1
+    0
   );
   // serve(NULL);
 
 
-  display_update_enable(true);
-}
-
-#define DISPLAY_WIDTH 64
-#define DISPLAY_HEIGHT 32
-
-void showDisplay(void) {}
-void setPixel(int x, int y, Color_ABGR c) {
-  display.drawPixel(x, y, display.color565(c.r, c.g, c.b));
+  // display_update_enable(true);
 }
 
 float clutBuffer[90*25*3];
 RenderMode3_t *renderer;
 
+void showDisplay(int currentBuffer) {
+  Color_ABGRf *buffer = renderer->buffer[renderer->currentBuffer];
+  Color_ABGRf copy[DISPLAY_BUFFER_SIZE/3];
+  for (int i = 0; i < DISPLAY_BUFFER_SIZE/3; i++) {
+    copy[i] = buffer[i];
+  }
+
+  for (int y = 0; y < DISPLAY_HEIGHT/2; y++) {
+    for (int x = 0; x < DISPLAY_WIDTH/2; x++) {
+      int bidx = x + y * DISPLAY_WIDTH/2;
+      Color_ABGRf c = copy[bidx];
+
+      displayBuffer[bidx] = {
+        (uint8_t)(255 * c.r),
+        (uint8_t)(255 * c.g),
+        (uint8_t)(255 * c.b)
+      };
+    }
+  }
+  // for (int i = 0; i < DISPLAY_BUFFER_SIZE / 128; i++) {
+    digitalWrite(4, LOW);
+    vTaskDelay(1);
+    SPI.writeBytes((uint8_t*)displayBuffer, DISPLAY_BUFFER_SIZE);
+    digitalWrite(4, HIGH);
+  // }
+}
+void setPixel(int x, int y, Color_ABGR c) {
+  // display.drawPixel(x, y, display.color565(c.r, c.g, c.b));
+}
+
+int targetFrameTime = 25;
+
 void render(void *arg) {
-  // int x, y;
-  // uint8_t r, g, b, val;
-
-  // TickType_t pxPreviousWakeTime;
-  // const TickType_t xTimeIncrement = 1000 / FPS;
-
   Serial.println("start render");
 
   Render3_Params_t renderParams = {
-        .warpScale = 4,
+        .warpScale = 16,
         .warpOffset = .6,
-        .scaleScale = 2,
-        .scaleOffset = 1,
+        .scaleScale = 1.5,
+        .scaleOffset = .5,
         .aspect = 1,
     };
 
     ColorParams_t colorParams = {
-        .valueScale = 2,
+        .valueScale = 1.5,
         .valueOffset = 0,
-        .saturationScale = .5,
-        .saturationOffset = 0,
+        .saturationScale = .6,
+        .saturationOffset = .1,
         .alphaScale = 0,
         .alphaOffset = 0,
         .maxAlpha = 0.5,
         .period = DISPLAY_WIDTH * 3,
-        .colorScale = .1,
+        .colorScale = .05,
         .gamut = {
             .red = 1,
             .green = 1,
@@ -308,54 +341,45 @@ void render(void *arg) {
         showDisplay
     );
 
+  TickType_t lastTime = xTaskGetTickCount();
+
   long t = micros();
 
   for (;;) {
     if (!audioProcessor) {
-      vTaskDelay(5);
+      vTaskDelay(100);
       continue;
     }
 
-    // Serial.println("Drivers:");
-    // Serial.println("Amp")
-
     Render3(renderer, audioProcessor->fs->drivers);
 
-    // To ensure that animation speed is similar on AVR & SAMD boards,
-    // limit frame rate to FPS value (might go slower, but never faster).
-    // This is preferable to delay() because the AVR is already plenty slow.
-    //uint32_t t;
-    //while(((t = millis()) - prevTime) < (1000 / FPS));
-    //prevTime = t;
-    // vTaskDelayUntil(&pxPreviousWakeTime, xTimeIncrement);
+    vTaskDelayUntil(&lastTime, targetFrameTime);
+  }
+}
 
-    // for(y=0; y<display.height(); y++) {
-    //   val = y * 255 / display.height();
-    //   // if (val + 32 < 255) val += 32;
-      
-    //   for(x=0; x<display.width(); x++) {  
-    //     ColorHSV((2*x + hueShift) % 360, 255, val, &r, &g, &b);
-    //     display.drawPixel(x, y, display.color565(r, g, b));
-    //   }
-    // }
+void renderLeft(void *arg) {
+  while (!renderer || !audioProcessor) {
+    vTaskDelay(100);
+  }
 
-    // hueShift += 1;
+  for (;;) {
+    Render3Left(renderer, audioProcessor->fs->drivers);
+  }
+}
 
-    // if (hueShift % 128 == 0) {
-    //   long now = micros();
-    //   double fps = 128.0 / (double)(now - t) / 1000.0;
-    //   t = now;
-    //   Serial.print("FPS: ");
-    //   Serial.println(fps);
-    // }
+void renderRight(void *arg) {
+  while (!renderer || !audioProcessor) {
+    vTaskDelay(100);
+  }
 
-    vTaskDelay(1);
+  for (;;) {
+    Render3Right(renderer, audioProcessor->fs->drivers);
   }
 }
 
 void draw(void *arg) {
   while (!renderer) {
-    vTaskDelay(10);
+    vTaskDelay(100);
   }
 
   for (;;) {
@@ -374,6 +398,8 @@ const char* password = WIFI_PASS;
 AsyncWebServer server(80);
 
 void makeJsonResponse(JsonObject root) {
+  root["frameRate"] = 1000 / targetFrameTime;
+
   JsonObject renderParams = root.createNestedObject("renderParams");
   renderParams["valueScale"] = renderer->colorParams->valueScale;
   renderParams["valueOffset"] = renderer->colorParams->valueOffset;
@@ -432,6 +458,13 @@ void setParamsFromJson(JsonObject root) {
 
   Serial.println("set params from json");
   bool hasKey;
+
+  hasKey = root.containsKey("frameRate");
+  if (hasKey) {
+    int frameRate = root["frameRate"];
+    targetFrameTime = 1000 / frameRate;
+  }
+
   JsonObject renderParams = root.getMember("renderParams");
   if (!renderParams.isNull()) {
     Serial.println("rendr parms not null");
@@ -544,25 +577,33 @@ void setParamsFromJson(JsonObject root) {
   }
 }
 
-void makeDebugResponse(JsonObject root) {
+void makeDebugResponse(JsonObject root, bool getRawInput) {
   JsonArray buckets = root.createNestedArray("buckets");
   for (int i = 0; i < audioProcessor->fs->size; i++) {
     buckets.add(audioProcessor->buckets[i]);
   }
   
-  JsonArray rawInput = root.createNestedArray("rawInput");
-  for (int i = CHANNEL_NUMBER; i < AUDIO_INPUT_FRAME_SIZE*2; i+=2) {
-    rawInput.add(rawBuffer[i]);
+  if (getRawInput) {
+    JsonArray rawInput = root.createNestedArray("rawInput");
+    for (int i = CHANNEL_NUMBER; i < AUDIO_INPUT_FRAME_SIZE*2; i+=2) {
+      rawInput.add(rawBuffer[i]);
+    }
   }
 
   JsonObject perf = root.createNestedObject("perf");
   perf["renderFps"] = renderer->fps;
-  perf["displayFps"] = displayFps;
+  // perf["displayFps"] = displayFps;
   perf["renderInitTime"] = renderer->initTime;
   perf["renderWarpTime"] = renderer->warpTime * renderer->rows * renderer->columns;
   perf["renderColorTime"] = renderer->colorTime * renderer->rows * renderer->columns;
   perf["renderDrawTime"] = renderer->drawTime;
   perf["renderWriteTime"] = renderer->writeTime;
+  perf["queueLeftTime"] = renderer->queueLeftTime;
+  perf["queueRightTime"] = renderer->queueRightTime;
+  perf["processLeftTime"] = renderer->processLeftTime;
+  perf["processRightTime"] = renderer->processRightTime;
+
+  perf["audioProcessTime"] = processTime;
   
   JsonObject drivers = root.createNestedObject("drivers");
   
@@ -651,7 +692,8 @@ void serve(void *arg) {
     response->addHeader("Server", "LED Panel Server");
     JsonObject root = response->getRoot();
     
-    makeDebugResponse(root);
+    // bool getRawInput = request->getParam("rawInput");
+    makeDebugResponse(root, false);
 
     response->setLength();
     request->send(response);
