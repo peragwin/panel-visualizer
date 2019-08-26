@@ -201,48 +201,13 @@ void setup() {
   pinMode(4, OUTPUT);
   digitalWrite(4, HIGH);
 
-  // display.begin(SCAN_RATE);
-  // display.setCursor(0,0);
-  // display.print("Hello World");
-  // display.setBrightness(255);
-  // display.setFastUpdate(true);
-
-  xTaskCreate(
+  xTaskCreatePinnedToCore(
     render,
     "render",
     8000,
     NULL,
     6,
-    &render_task
-  );
-
-  xTaskCreatePinnedToCore(
-    renderLeft,
-    "renderLeft",
-    8000,
-    NULL,
-    5,
-    &renderLeftTask,
-    1
-  );
-
-  xTaskCreatePinnedToCore(
-    renderRight,
-    "renderRight",
-    8000,
-    NULL,
-    5,
-    &renderRightTask,
-    0
-  );
-
-  xTaskCreatePinnedToCore(
-    draw,
-    "draw",
-    16000,
-    NULL,
-    1,
-    &draw_task,
+    &render_task,
     1
   );
 
@@ -265,26 +230,18 @@ void setup() {
     &server_task,
     0
   );
-  // serve(NULL);
-
-
-  // display_update_enable(true);
 }
 
 float clutBuffer[90*25*3];
-RenderMode3_t *renderer;
+Render3 *renderer;
 
-void showDisplay(int currentBuffer) {
-  Color_ABGRf *buffer = renderer->buffer[renderer->currentBuffer];
-  Color_ABGRf copy[DISPLAY_BUFFER_SIZE/3];
-  for (int i = 0; i < DISPLAY_BUFFER_SIZE/3; i++) {
-    copy[i] = buffer[i];
-  }
+void showDisplay(Render3 *r) {
+  Color_RGB *buffer = renderer->getCurrentBuffer();
 
   for (int y = 0; y < DISPLAY_HEIGHT/2; y++) {
     for (int x = 0; x < DISPLAY_WIDTH/2; x++) {
       int bidx = x + y * DISPLAY_WIDTH/2;
-      Color_ABGRf c = copy[bidx];
+      Color_RGB c = buffer[bidx];
 
       displayBuffer[bidx] = {
         (uint8_t)(255 * c.r),
@@ -294,19 +251,15 @@ void showDisplay(int currentBuffer) {
     }
   }
   // for (int i = 0; i < DISPLAY_BUFFER_SIZE / 128; i++) {
-    digitalWrite(4, LOW);
-    delayMicroseconds(1);
-    SPI.writeBytes((uint8_t*)displayBuffer, DISPLAY_BUFFER_SIZE);
-    digitalWrite(4, HIGH);
+  digitalWrite(4, LOW);
+  delayMicroseconds(1);
+  SPI.writeBytes((uint8_t*)displayBuffer, DISPLAY_BUFFER_SIZE);
+  digitalWrite(4, HIGH);
   // }
-
-  vTaskDelay(1);
 }
-void setPixel(int x, int y, Color_ABGR c) {
-  // display.drawPixel(x, y, display.color565(c.r, c.g, c.b));
-}
+void setPixel(int x, int y, Color_ABGR c) {}
 
-int targetFrameTime = 25;
+int targetFrameTime = 9;
 
 void render(void *arg) {
   Serial.println("start render");
@@ -314,13 +267,14 @@ void render(void *arg) {
   Render3_Params_t renderParams = {
         .warpScale = 16,
         .warpOffset = .6,
-        .scaleScale = 1.5,
+        .scaleScale = 2,
         .scaleOffset = .5,
-        .aspect = 1,
+        .aspectX = 1,
+        .aspectY = 1,
     };
 
     ColorParams_t colorParams = {
-        .valueScale = 1.5,
+        .valueScale = 2,
         .valueOffset = 0,
         .saturationScale = .6,
         .saturationOffset = .1,
@@ -328,7 +282,7 @@ void render(void *arg) {
         .alphaOffset = 0,
         .maxAlpha = 0.5,
         .period = DISPLAY_WIDTH * 3,
-        .colorScale = .05,
+        .colorScale = .25,
         .gamut = {
             .red = 1,
             .green = 1,
@@ -337,7 +291,7 @@ void render(void *arg) {
         .clut = clutBuffer,
     };
 
-  renderer = NewRender3(DISPLAY_WIDTH, DISPLAY_HEIGHT, NUM_BUCKETS, NUM_FRAMES,
+    renderer = new Render3(DISPLAY_WIDTH, DISPLAY_HEIGHT, NUM_BUCKETS, NUM_FRAMES,
         &renderParams, &colorParams,
         setPixel,
         showDisplay
@@ -353,46 +307,13 @@ void render(void *arg) {
       continue;
     }
 
-    Render3(renderer, audioProcessor->fs->drivers);
+    renderer->render(audioProcessor->fs->drivers);
 
     vTaskDelayUntil(&lastTime, targetFrameTime);
   }
 }
 
-void renderLeft(void *arg) {
-  while (!renderer || !audioProcessor) {
-    vTaskDelay(100);
-  }
-
-  for (;;) {
-    Render3Subtask(renderer, 0, audioProcessor->fs->drivers);
-  }
-}
-
-void renderRight(void *arg) {
-  while (!renderer || !audioProcessor) {
-    vTaskDelay(100);
-  }
-
-  for (;;) {
-    Render3Subtask(renderer, 1, audioProcessor->fs->drivers);
-  }
-}
-
-void draw(void *arg) {
-  while (!renderer) {
-    vTaskDelay(100);
-  }
-
-  for (;;) {
-    Render3Write(renderer);
-  }
-}
-
-void loop() {
-  // Serial.println("loop");
-  // delay(1000);
-}
+void loop() {}
 
 #include "wifi_credentials.h"
 const char* ssid = WIFI_SSID;
@@ -401,6 +322,10 @@ AsyncWebServer server(80);
 
 void makeJsonResponse(JsonObject root) {
   root["frameRate"] = 1000 / targetFrameTime;
+
+  JsonArray size = root.createNestedArray("size");
+  size.add(renderer->getRows());
+  size.add(renderer->getColumns());
 
   JsonObject renderParams = root.createNestedObject("renderParams");
   renderParams["valueScale"] = renderer->colorParams->valueScale;
@@ -417,7 +342,8 @@ void makeJsonResponse(JsonObject root) {
   renderParams["warpOffset"] = renderer->params->warpOffset;
   renderParams["scaleScale"] = renderer->params->scaleScale;
   renderParams["scaleOffset"] = renderer->params->scaleOffset;
-  renderParams["aspect"] = renderer->params->aspect;
+  renderParams["aspectX"] = renderer->params->aspectX;
+  renderParams["aspectY"] = renderer->params->aspectY;
 
   JsonObject audioParams = root.createNestedObject("audioParams");
   audioParams["gain"] = audioProcessor->fs->config->gain;
@@ -467,6 +393,14 @@ void setParamsFromJson(JsonObject root) {
     targetFrameTime = 1000 / frameRate;
   }
 
+  JsonArray size = root["size"];
+  if (!size.isNull() && size.size() == 2) {
+    int rows = size.getElement(0);
+    int columns = size.getElement(1);
+    AP_SetSize(audioProcessor, rows, columns);
+    renderer->setSize(rows, columns);
+  }
+
   JsonObject renderParams = root.getMember("renderParams");
   if (!renderParams.isNull()) {
     Serial.println("rendr parms not null");
@@ -504,8 +438,11 @@ void setParamsFromJson(JsonObject root) {
     if (hasKey) renderer->params->scaleScale = renderParams.getMember("scaleScale");
     hasKey = renderParams.containsKey("scaleOffset");
     if (hasKey) renderer->params->scaleOffset = renderParams.getMember("scaleOffset");
+    hasKey = renderParams.containsKey("aspectX");
+    if (hasKey) renderer->params->aspectX = renderParams.getMember("aspectX");
+    hasKey = renderParams.containsKey("aspectY");
+    if (hasKey) renderer->params->aspectY = renderParams.getMember("aspectY");
     hasKey = renderParams.containsKey("aspect");
-    if (hasKey) renderer->params->aspect = renderParams.getMember("aspect");
   }
 
   JsonObject audioParams = root.getMember("audioParams");
@@ -596,8 +533,7 @@ void makeDebugResponse(JsonObject root, bool getRawInput) {
   perf["renderFps"] = renderer->fps;
   // perf["displayFps"] = displayFps;
   perf["renderInitTime"] = renderer->initTime;
-  perf["renderWarpTime"] = renderer->warpTime * renderer->rows * renderer->columns;
-  perf["renderColorTime"] = renderer->colorTime * renderer->rows * renderer->columns;
+  perf["renderColorTime"] = renderer->colorTime * renderer->getRows() * renderer->getColumns();
   perf["renderDrawTime"] = renderer->drawTime;
   perf["renderWriteTime"] = renderer->writeTime;
   perf["queueLeftTime"] = renderer->queueLeftTime;
@@ -644,7 +580,9 @@ void serve(void *arg) {
   WiFi.begin(ssid, password);
   if (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.printf("WiFi Failed!\n");
-    return;
+    while (1) {
+      vTaskDelay(10000);
+    }
   }
 
   Serial.print("IP Address: ");
