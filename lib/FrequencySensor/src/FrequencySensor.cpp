@@ -4,8 +4,11 @@
 #include "fast_log.h"
 #include "fft.h"
 
+#define MAX_SIZE 16
+#define MAX_LENGTH 32
+
 Filter_t* NewFilter(int size, float *params, int nparams) {
-    float *values = (float*)calloc(size, sizeof(float));
+    float *values = (float*)calloc(MAX_SIZE, sizeof(float));
     float *fparams = (float*)malloc(nparams*sizeof(float));
     memcpy(fparams, params, nparams*sizeof(float));
 
@@ -17,6 +20,10 @@ Filter_t* NewFilter(int size, float *params, int nparams) {
     return f;
 }
 
+void filter_setSize(Filter_t *f, int size) {
+    f->size = size;
+}
+
 void apply_filter(Filter_t *f, float *frame) {
     for (int i = 0; i < f->size; i++) {
         f->values[i] = f->params[0] * frame[i] + f->params[1] * f->values[i];
@@ -24,19 +31,20 @@ void apply_filter(Filter_t *f, float *frame) {
 }
 
 FS_Drivers_t* NewDrivers(int size, int columns) {
-    float **amp = (float**)malloc(columns * sizeof(float*));
-    for (int i = 0; i < columns; i++) {
-        float *amp_vals = (float*)calloc(size, sizeof(float));
+    float **amp = (float**)malloc(MAX_LENGTH * sizeof(float*));
+    for (int i = 0; i < MAX_LENGTH; i++) {
+        float *amp_vals = (float*)calloc(MAX_SIZE, sizeof(float));
         amp[i] = amp_vals;
     }
-
-    float *diff = (float*)calloc(size, sizeof(float));
-    float *energy = (float*)calloc(size, sizeof(float));
-    float *scales = (float*)calloc(size, sizeof(float));
-    for (int i = 0; i < size; i++) scales[i] = 1;
+    float *ampAvg = (float*)calloc(MAX_LENGTH, sizeof(float));
+    float *diff = (float*)calloc(MAX_SIZE, sizeof(float));
+    float *energy = (float*)calloc(MAX_SIZE, sizeof(float));
+    float *scales = (float*)calloc(MAX_LENGTH, sizeof(float));
+    for (int i = 0; i < MAX_SIZE; i++) scales[i] = 1;
     
     FS_Drivers_t *d = (FS_Drivers_t*)malloc(sizeof(FS_Drivers_t));
     d->amp = amp;
+    d->ampAverage = ampAvg;
     d->diff = diff;
     d->energy = energy;
     d->scales = scales;
@@ -51,8 +59,8 @@ FS_Drivers_t* NewDrivers(int size, int columns) {
 FS_GainController_t* NewGainController(int size, float *filterParams, float kp, float kd) {
     Filter_t *filter = NewFilter(size, filterParams, 2); 
 
-    float *gain = (float*)calloc(size, sizeof(float));
-    float *err = (float*)calloc(size, sizeof(float));
+    float *gain = (float*)calloc(MAX_SIZE, sizeof(float));
+    float *err = (float*)calloc(MAX_SIZE, sizeof(float));
     
     FS_GainController_t* gc = (FS_GainController_t*)malloc(sizeof(FS_GainController_t));
     gc->size = size;
@@ -74,7 +82,7 @@ FS_Module_t* NewFrequencySensor(int size, int columns) {
     config->diffAbs = 0.5;
     config->sync = 5e-3;
     config->mode = 1;
-    config->preemph = 4;
+    config->preemph = 2;
     config->columnDivider = 1;
 
     float gainParams[2] = {
@@ -88,7 +96,7 @@ FS_Module_t* NewFrequencySensor(int size, int columns) {
     Filter_t *gainFeedback = NewFilter(size, gainFeedbackP, 2);
 
     float diffParams[2] = {
-        0.05, .95,
+        0.15, .85,
     };
     Filter_t *diffFilter = NewFilter(size, diffParams, 2);
 
@@ -98,8 +106,8 @@ FS_Module_t* NewFrequencySensor(int size, int columns) {
     Filter_t *diffFeedback = NewFilter(size, diffFeedbackP, 2);
 
     float scaleParams[4] = {
+        0.01, 0.99,
         0.001, 0.999,
-        0.005, 0.995,
     };
     Filter_t *scaleFilter = NewFilter(size, scaleParams, 4);
     for (int i = 0; i < size; i++) {
@@ -132,6 +140,17 @@ FS_Module_t* NewFrequencySensor(int size, int columns) {
     return fs;
 }
 
+void FS_SetSize(FS_Module_t *f, int size, int columns) {
+    filter_setSize(f->gainFilter, size);
+    filter_setSize(f->gainFeedback, size);
+    filter_setSize(f->diffFilter, size);
+    filter_setSize(f->diffFeedback, size);
+    filter_setSize(f->scaleFilter, size);
+    filter_setSize(f->gc->filter, size);
+    f->size = size;
+    f->columns = columns;
+}
+
 static void init_blackman_window(float *window, int size) {
   for (int i = 0; i < size; i++) {
     // blackman-harris window
@@ -153,7 +172,7 @@ Audio_Processor_t* NewAudioProcessor(int size, int buckets, int columns, short *
     
     int bucketSize = (size - (4 * size / 24)) / 2;
     ap->bucketer = NewBucketer(bucketSize, buckets, 32, 12000);
-    float *bucketArray = (float*)malloc(buckets*sizeof(float));
+    float *bucketArray = (float*)malloc(MAX_SIZE*sizeof(float));
     ap->buckets = bucketArray;
 
     fft_config_t *fft = fft_init(size, FFT_REAL, FFT_FORWARD, (float*)-1, (float*)-1);
@@ -161,9 +180,14 @@ Audio_Processor_t* NewAudioProcessor(int size, int buckets, int columns, short *
 
     ap->fs = NewFrequencySensor(buckets, columns);
 
-    ap->dacOutput= dacBuffer;
-
     return ap;
+}
+
+void AP_SetSize(Audio_Processor_t *a, int size, int columns) {
+    if (size > MAX_SIZE) size = MAX_SIZE;
+    if (columns > MAX_LENGTH) columns = MAX_LENGTH;
+    FS_SetSize(a->fs, size, columns);
+    Bucketer_SetBuckets(a->bucketer, size);
 }
 
 // converts 24bit right shifted 2s complement into signed ints
@@ -354,6 +378,11 @@ void apply_effects(FS_Module_t *f) {
     float ag = f->config->gain;
     float ao = f->config->offset;
 
+    // Serial.print("s ");
+    // Serial.println(f->size);
+    // Serial.print("l ");
+    // Serial.println(f->columns);
+
     // apply column animation
     if (f->config->mode == 1 || f->config->mode == 2) {
         effectCounter++;
@@ -368,6 +397,7 @@ void apply_effects(FS_Module_t *f) {
                     for (int j = 0; j < f->size; j++) {
                         f->drivers->amp[i][j] *= decay;
                     }
+                    f->drivers->ampAverage[i] *= decay;
                 }
             }
         }
@@ -483,6 +513,13 @@ void apply_scaling(FS_Module_t *f, float *frame) {
         f->scaleFilter->values[i] = vsh;
         f->drivers->scales[i] = vs;
     }
+    float ampAvg = 0;
+    float *amp = FS_GetColumn(f->drivers, 0);
+    for (int i = 0; i < f->size; i++) {
+        ampAvg += f->drivers->scales[i] * amp[i];
+    }
+    ampAvg /= f->size;
+    f->drivers->ampAverage[f->columnIdx] = ampAvg;
 }
 
 void FS_Process(FS_Module_t *f, float *frame) {
@@ -496,9 +533,3 @@ void FS_Process(FS_Module_t *f, float *frame) {
     f->renderLock = 0;
 }
 
-float* FS_GetColumn(FS_Drivers_t *d, int column) {
-    column %= d->length;
-    column = d->columnIdx - column;
-    if (column < 0) column += d->length;
-    return d->amp[column];
-}

@@ -48,7 +48,8 @@ typedef struct {
     float warpOffset;
     float scaleScale;
     float scaleOffset;
-    float aspect;
+    float aspectX;
+    float aspectY;
 } Render3_Params_t;
 
 typedef struct {
@@ -56,21 +57,47 @@ typedef struct {
     float y;
     int srcX;
     int srcY;
-} Render3_GridPoint_t;
+} GridPoint_t;
 
-typedef struct {
-    Render3_GridPoint_t *points;
+class Render3 {
+  private:
     int columns;
     int rows;
     int displayWidth;
     int displayHeight;
+
+    int renderCount;
+    TickType_t lastRender;
+
+    GridPoint_t *points;
+
+    Color_RGB **buffer;
+    int currentBuffer;
+
+    TaskHandle_t renderSubtasks[2];
+    TaskHandle_t writeTaskHandle;
+
+    void (*setPixel) (int x, int y, Color_ABGR c);
+    void (*show) (Render3 *r);
+
+    void createRenderSubtask(int taskNum, const char* name);
+    static void renderSubtask0(void *arg);
+    static void renderSubtask1(void *arg);
+    void renderSubtask(int taskNum);
+    void renderInner(int start, int end, FS_Drivers_t *drivers);
+    static void writeTask(void *arg);
+    void createWriteSubtask();
+    void write();
+    void initGridPoints(int rows, int columns);
+
+    static GridPoint_t applyWarp(GridPoint_t *g, float w, float s);
+    static void getDisplayXY(GridPoint_t *g, int w, int h, int *x, int *y);
+
+
+  public:
     Render3_Params_t *params;
     ColorParams_t *colorParams;
 
-    float *scales;
-    
-    int renderCount;
-    TickType_t lastRender;
     float fps;
     long initTime;
     long warpTime;
@@ -82,30 +109,27 @@ typedef struct {
     long processLeftTime;
     long processRightTime;
 
-    Color_ABGRf **buffer;
-    int currentBuffer;
-    // QueueHandle_t startDraw;
-    // QueueHandle_t startWrite;
-    // EventGroupHandle_t drawDisplayGroup;
-    // SemaphoreHandle_t currentBufferLock[2];
+    QueueHandle_t startDraw;
+    QueueHandle_t startWrite;
+    EventGroupHandle_t drawDisplayGroup;
+    SemaphoreHandle_t currentBufferLock[2];
 
-    void (*setPixel) (int x, int y, Color_ABGR c);
-    void (*show) (int currentBuffer);
-} RenderMode3_t;
+    Render3(
+        int displayWidth,
+        int displayHeight,
+        int rows,
+        int columns,
+        Render3_Params_t *params,
+        ColorParams_t *colorParams,
+        void (*setPixel) (int x, int y, Color_ABGR c),
+        void (*show) (Render3 *r)
+    );
 
-RenderMode3_t *NewRender3(
-    int displayWidth,
-    int displayHeight,
-    int rows,
-    int columns,
-    Render3_Params_t *params,
-    ColorParams_t *colorParams,
-    void (*setPixel) (int x, int y, Color_ABGR c),
-    void (*show) (int currentBuffer)
-);
-
-void Render3(RenderMode3_t *r, FS_Drivers_t *drivers);
-void Render3Write(RenderMode3_t *r);
-void Render3Subtask(RenderMode3_t *r, int taskNum, FS_Drivers_t *drivers);
+    void render(FS_Drivers_t *drivers);
+    Color_RGB* getCurrentBuffer();
+    void setSize(int rows, int columns);
+    int getRows();
+    int getColumns();
+};
 
 // #endif
