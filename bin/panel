@@ -1,0 +1,103 @@
+#!/bin/env python
+
+import argparse
+import json
+import yaml
+import requests
+
+
+class ArgumentError(Exception):
+    pass  # def __init__(self, msg:str):
+
+
+class PanelCommand:
+
+    # TODO:
+    # panel profile save {name}
+    # panel profile load {name}
+    # panel profile load default
+    #
+    def parseArgs(self):
+        parser = argparse.ArgumentParser("led panel updater")
+        parser.add_argument("--host", type=str)
+
+        subparsers = parser.add_subparsers(dest='cmd', required=True)
+
+        update = subparsers.add_parser("update")
+        update.add_argument("variable", type=str)
+        update.add_argument("value", type=str)
+        update.set_defaults(func=self.update)
+
+        debug = subparsers.add_parser('debug')
+        debug.set_defaults(func=self.debug)
+
+        args = parser.parse_args()
+
+        return args
+
+    def update(self, args):
+        variable = args.variable
+        value = json.loads(args.value)
+
+        doc = self.buildUpdate(variable, value)
+
+        print("Sending update:", doc)
+
+        host = args.host
+
+        if not host:
+            if "host" not in self.state:
+                raise ArgumentError("host name is required")
+            host = self.state['host']
+
+        resp = requests.post(host, json=doc)
+        if resp.status_code >= 400:
+            print("Bad response:", resp)
+            return
+
+        self.state["host"] = host
+        state = resp.json()
+        self.state["currentState"] = state
+
+    def buildUpdate(self, variable: str, value: str):
+
+        keys = variable.split('.')
+
+        jsonDoc = {}
+        currentObject = jsonDoc
+        for key in keys[:-1]:
+            newObject = {}
+            currentObject[key] = newObject
+            currentObject = newObject
+
+        currentObject[keys[-1]] = value
+
+        return jsonDoc
+
+    def debug(self):
+        pass
+
+    def loadState(self):
+        try:
+            with open('./.panelrc') as f:
+                state = yaml.load(f)
+                return state if state else {}
+        except FileNotFoundError:
+            return {}
+
+    def writeState(self):
+        with open('./.panelrc', 'w') as f:
+            yaml.dump(self.state, f)
+
+    def __init__(self):
+        args = self.parseArgs()
+
+        self.state = self.loadState()
+
+        args.func(args)
+
+        self.writeState()
+
+
+if __name__ == '__main__':
+    PanelCommand()
