@@ -12,7 +12,7 @@
 #define WRITE_QUEUE_TIMEOUT 3000
 
 #define MAX_ROWS 16
-#define MAX_COLUMNS 32
+#define MAX_COLUMNS 64
 
 static float sigmoid(float x) {
     float a = x;
@@ -238,7 +238,8 @@ void Render3::render(FS_Drivers_t *drivers) {
 
     renderCount++;
     long now = micros();
-    fps = 1000000. / ((float)now - (float)lastRender);
+    float fps = 1000000. / ((float)now - (float)lastRender);
+    this->fps = .01 * fps + .99 * this->fps;
     lastRender = now;
 
     // Serial.println("line 283");
