@@ -4,6 +4,9 @@ import argparse
 import json
 import yaml
 import requests
+import sys
+import os
+import pathlib
 
 
 class ArgumentError(Exception):
@@ -18,15 +21,20 @@ class PanelCommand:
     # panel profile load default
     #
     def parseArgs(self):
-        parser = argparse.ArgumentParser("led panel updater")
+        parser = argparse.ArgumentParser("led panel cli")
         parser.add_argument("--host", type=str)
 
         subparsers = parser.add_subparsers(dest='cmd', required=True)
 
-        update = subparsers.add_parser("update")
-        update.add_argument("variable", type=str)
-        update.add_argument("value", type=str)
-        update.set_defaults(func=self.update)
+        set = subparsers.add_parser("set")
+        set.add_argument("variables", type=str, metavar='N', nargs='+')
+        set.add_argument("value", type=str)
+        set.set_defaults(func=self.set)
+
+        get = subparsers.add_parser("get")
+        get.add_argument("variables", type=str, metavar='N', nargs='*')
+        get.add_argument("--cached", action='store_true')
+        get.set_defaults(func=self.get)
 
         debug = subparsers.add_parser('debug')
         debug.set_defaults(func=self.debug)
@@ -35,14 +43,7 @@ class PanelCommand:
 
         return args
 
-    def update(self, args):
-        variable = args.variable
-        value = json.loads(args.value)
-
-        doc = self.buildUpdate(variable, value)
-
-        print("Sending update:", doc)
-
+    def _getHost(self, args) -> str:
         host = args.host
 
         if not host:
@@ -50,18 +51,46 @@ class PanelCommand:
                 raise ArgumentError("host name is required")
             host = self.state['host']
 
-        resp = requests.post(host, json=doc)
+        return host
+
+    def queryPanel(self, host: str, method: str, path="/", json="") -> (dict, int):
+        func = getattr(requests, method)
+        query = '/'.join(s.strip('/') for s in [host, path])
+
+        try:
+            if json:
+                resp = func(query, json=json)
+            else:
+                resp = func(query)
+        except requests.exceptions.ConnectionError:
+            print("Failed to connect")
+            sys.exit(-1)
+
         if resp.status_code >= 400:
             print("Bad response:", resp)
-            return
+            return {}, -1
 
         self.state["host"] = host
         state = resp.json()
         self.state["currentState"] = state
 
-    def buildUpdate(self, variable: str, value: str):
+        return state, 0
 
-        keys = variable.split('.')
+    def set(self, args):
+        variables = args.variables
+        value = json.loads(args.value)
+
+        doc = self.buildUpdate(variables, value)
+
+        print("Sending update:", doc)
+
+        host = self._getHost(args)
+
+        self.queryPanel(host, 'post', json=doc)
+
+    def buildUpdate(self, variables: str, value: str):
+
+        keys = variables
 
         jsonDoc = {}
         currentObject = jsonDoc
@@ -74,19 +103,72 @@ class PanelCommand:
 
         return jsonDoc
 
-    def debug(self):
-        pass
+    def get(self, args):
+        variables = args.variables
+
+        host = self._getHost(args)
+
+        if not args.cached:
+            state, err = self.queryPanel(host, 'get')
+            if err:
+                return
+        else:
+            try:
+                state = self.state["currentState"]
+            except KeyError:
+                print("No cached state")
+                sys.exit(-1)
+
+        if not variables:
+            print(yaml.dump(self.state))
+            return
+
+        current = state
+        value = {}
+        newValue = {}
+        resp = {"State": value}
+
+        try:
+            i = 0
+            for i, v in enumerate(variables[:-1]):
+                current = current[v]
+                newValue = {}
+                value[v] = newValue
+                value = newValue
+            i += 1
+            v = variables[-1]
+            value[v] = current[v]
+        except (KeyError, TypeError):
+            print("{0} not found in state".format(
+                '.'.join(variables[:i+1])))
+            return
+
+        print(yaml.dump(resp))
+
+    def debug(self, args):
+
+        host = self._getHost(args)
+        state, err = self.queryPanel(host, 'get', '/debug')
+        if err:
+            return
+
+        print(yaml.dump(state))
 
     def loadState(self):
         try:
-            with open('./.panelrc') as f:
-                state = yaml.load(f)
+            file = pathlib.Path.home()
+            file = os.path.join(file, '.panelrc')
+            with open(file) as f:
+                state = yaml.load(f, Loader=yaml.FullLoader)
                 return state if state else {}
-        except FileNotFoundError:
+        except FileNotFoundError as e:
+            print("could not open panelrc", e)
             return {}
 
     def writeState(self):
-        with open('./.panelrc', 'w') as f:
+        file = pathlib.Path.home()
+        file = os.path.join(file, '.panelrc')
+        with open(file, 'w') as f:
             yaml.dump(self.state, f)
 
     def __init__(self):

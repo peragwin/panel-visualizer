@@ -30,6 +30,9 @@
 #define DISPLAY_HEIGHT 32
 #define DISPLAY_BUFFER_SIZE (DISPLAY_WIDTH * DISPLAY_HEIGHT * 3 / 4)
 
+#define NUM_BUCKETS 16
+#define NUM_FRAMES 64
+
 #define I2S_NUM I2S_NUM_0
 #define I2S_BCK 26
 #define I2S_WS 25
@@ -129,9 +132,6 @@ void setupI2S() {
 void startI2S() {
   i2sHandle->startRX();
 }
-
-#define NUM_BUCKETS 16
-#define NUM_FRAMES 32
 
 Audio_Processor_t *audioProcessor;
 int rawBuffer[AUDIO_INPUT_FRAME_SIZE*2];

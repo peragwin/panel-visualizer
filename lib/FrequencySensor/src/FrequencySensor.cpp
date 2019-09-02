@@ -5,7 +5,7 @@
 #include "fft.h"
 
 #define MAX_SIZE 16
-#define MAX_LENGTH 32
+#define MAX_LENGTH 64
 
 Filter_t* NewFilter(int size, float *params, int nparams) {
     float *values = (float*)calloc(MAX_SIZE, sizeof(float));
@@ -77,12 +77,12 @@ FS_Module_t* NewFrequencySensor(int size, int columns) {
 
     FS_Config_t *config = (FS_Config_t*)malloc(sizeof(FS_Config_t));
     config->offset = 0.25;
-    config->gain = 8;
+    config->gain = 16;
     config->diffGain = 0.1;
     config->diffAbs = 0.5;
     config->sync = 5e-3;
     config->mode = 1;
-    config->preemph = 2;
+    config->preemph = 16;
     config->columnDivider = 1;
 
     float gainParams[2] = {
@@ -106,7 +106,7 @@ FS_Module_t* NewFrequencySensor(int size, int columns) {
     Filter_t *diffFeedback = NewFilter(size, diffFeedbackP, 2);
 
     float scaleParams[4] = {
-        0.01, 0.99,
+        0.001, 0.999,
         0.001, 0.999,
     };
     Filter_t *scaleFilter = NewFilter(size, scaleParams, 4);
@@ -498,8 +498,9 @@ void apply_scaling(FS_Module_t *f, float *frame) {
         float vs = f->drivers->scales[i];
 
         float sval = vs * (frame[i] - 1);
-        if (sval < 0) sval = -sval;
-        
+        //if (sval < 0) sval = -sval;
+        sval *= sval;
+
         float *params = f->scaleFilter->params;
         if (sval < vsh) {
             vsh = params[0] * sval + params[1] * vsh;
