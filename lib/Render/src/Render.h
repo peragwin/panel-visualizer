@@ -1,10 +1,12 @@
 #pragma once
 
+#include <functional>
 #include <FrequencySensor.h>
 #include "color.h"
 #include <FreeRTOS.h>
 
-typedef struct {
+typedef struct
+{
     float valueScale;
     float valueOffset;
     float saturationScale;
@@ -18,7 +20,8 @@ typedef struct {
     float *clut;
 } ColorParams_t;
 
-typedef struct {
+typedef struct
+{
     float pHeight;
     float pHScale;
     float pHOffset;
@@ -30,20 +33,21 @@ typedef struct {
 } Render2Params_t;
 
 // RenderMode2 displays a single row of LEDs
-typedef struct {
+typedef struct
+{
     int size;
     int length;
     ColorParams_t *colorParams;
     Render2Params_t *params;
-    void (*_setPixel) (int x, int y, Color_ABGR c);
+    void (*_setPixel)(int x, int y, Color_ABGR c);
 } RenderMode2_t;
 
-RenderMode2_t* NewRender2(Render2Params_t *params, ColorParams_t *colorParams, int size, int length,
-    void (*setPixel) (int x, int y, Color_ABGR c));
+RenderMode2_t *NewRender2(Render2Params_t *params, ColorParams_t *colorParams, int size, int length,
+                          void (*setPixel)(int x, int y, Color_ABGR c));
 void Render2(RenderMode2_t *r, FS_Drivers_t *drivers);
 
-
-typedef struct {
+typedef struct
+{
     float warpScale;
     float warpOffset;
     float scaleScale;
@@ -52,19 +56,28 @@ typedef struct {
     float aspectY;
 } Render3_Params_t;
 
-typedef struct {
+typedef struct
+{
     float x;
     float y;
     int srcX;
     int srcY;
 } GridPoint_t;
 
-class Render3 {
-  private:
-    int columns;
-    int rows;
+class Render3
+{
+
+    using setPixelFunc = std::function<void(int, int, Color_ABGR)>;
+    using displayFunc = std::function<void(Render3 *)>;
+
+private:
     int displayWidth;
     int displayHeight;
+    int columns;
+    int rows;
+
+    Render3_Params_t *params;
+    ColorParams_t *colorParams;
 
     int renderCount;
     TickType_t lastRender;
@@ -77,10 +90,11 @@ class Render3 {
     TaskHandle_t renderSubtasks[2];
     TaskHandle_t writeTaskHandle;
 
-    void (*setPixel) (int x, int y, Color_ABGR c);
-    void (*show) (Render3 *r);
+    displayFunc show;
+    // void (*setPixel)(int x, int y, Color_ABGR c);
+    // void (*show)(Render3 *r);
 
-    void createRenderSubtask(int taskNum, const char* name);
+    void createRenderSubtask(int taskNum, const char *name);
     static void renderSubtask0(void *arg);
     static void renderSubtask1(void *arg);
     void renderSubtask(int taskNum);
@@ -93,11 +107,7 @@ class Render3 {
     static GridPoint_t applyWarp(GridPoint_t *g, float w, float s);
     static void getDisplayXY(GridPoint_t *g, int w, int h, int *x, int *y);
 
-
-  public:
-    Render3_Params_t *params;
-    ColorParams_t *colorParams;
-
+public:
     float fps;
     long initTime;
     long warpTime;
@@ -117,19 +127,19 @@ class Render3 {
     Render3(
         int displayWidth,
         int displayHeight,
-        int rows,
         int columns,
+        int rows,
         Render3_Params_t *params,
         ColorParams_t *colorParams,
-        void (*setPixel) (int x, int y, Color_ABGR c),
-        void (*show) (Render3 *r)
-    );
+        displayFunc show);
 
     void render(FS_Drivers_t *drivers);
-    Color_RGB* getCurrentBuffer();
+    Color_RGB *getCurrentBuffer();
     void setSize(int rows, int columns);
-    int getRows();
-    int getColumns();
+    int getRows() { return rows; };
+    int getColumns() { return columns; };
+    Render3_Params_t *getParams() { return params; };
+    ColorParams_t *getColorParams() { return colorParams; };
 };
 
 // #endif
