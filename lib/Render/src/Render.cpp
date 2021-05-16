@@ -23,13 +23,13 @@ static float sigmoid(float x)
     return (1.0 + x / (1.0 + a)) / 2.0;
 }
 
-void clut(float *t, double hue, double sat, double val, double *r, double *g, double *b)
+void clut(float *t, float hue, float sat, float val, float *r, float *g, float *b)
 {
     int ti = (int)(val / 4) + 25 * (int)(hue / 4);
     ti *= 3;
-    *r = (double)t[ti];
-    *g = (double)t[ti + 1];
-    *b = (double)t[ti + 2];
+    *r = t[ti];
+    *g = t[ti + 1];
+    *b = t[ti + 2];
 }
 
 static Color_ABGRf get_hsv(ColorParams_t *params, float amp, float phase, float phi)
@@ -38,8 +38,8 @@ static Color_ABGRf get_hsv(ColorParams_t *params, float amp, float phase, float 
     float vo = params->valueOffset;
     float ss = params->saturationScale;
     float so = params->saturationOffset;
-    // float as = params->alphaScale;
-    // float ao = params->alphaOffset;
+    float as = params->alphaScale;
+    float ao = params->alphaOffset;
     float cs = params->colorScale;
 
     float hue = fmod(180 * (cs * phi + phase) / PI, 360);
@@ -48,12 +48,12 @@ static Color_ABGRf get_hsv(ColorParams_t *params, float amp, float phase, float 
 
     // float sat = sigmoid(ss * amp + so);
     float val = ss * sigmoid(vs * amp + vo) + so;
-    // float alp = 0;//sigmoid(as * amp + ao);
+    float alp = sigmoid(as * amp + ao);
 
-    double r, g, b;
+    float r, g, b;
     if (params->clut == NULL)
     {
-        hsluv2rgb((double)hue, 100, 100 * (double)val, &r, &g, &b);
+        // hsluv2rgb(hue, 100, 100 * (double)val, &r, &g, &b);
     }
     else
     {
@@ -63,7 +63,7 @@ static Color_ABGRf get_hsv(ColorParams_t *params, float amp, float phase, float 
     g *= g;
     b *= b;
 
-    Color_ABGRf c = {0 /*alp * params->maxAlpha*/, (float)b, (float)g, (float)r};
+    Color_ABGRf c = {alp, (float)b, (float)g, (float)r};
     return c;
 }
 
@@ -400,15 +400,19 @@ void Render3::renderInner(int start, int end, FS_Drivers_t *drivers)
         // Serial.print("rendeer ln 277 ");
         // Serial.println(i);
 
-        float wc1 = /*c1.a*/ +c1.b + c1.g + c1.r;
-        wc1 /= 3;
-        float wc2 = /*c2.a*/ +c2.b + c2.g + c2.r;
-        wc2 /= 3;
-        float sw = 1 / (wc1 + wc2);
-        float sc1 = wc1 * sw;
-        float sc2 = wc2 * sw;
+        // float wc1 = /*c1.a*/ +c1.b + c1.g + c1.r;
+        // float wc2 = /*c2.a*/ +c2.b + c2.g + c2.r;
+        // float sw = 1.0 / (wc1 + wc2);
+        // float sc1 = wc1 * sw;
+        // float sc2 = wc2 * sw;
 
-        //c2.a = c1.a * sc1 + c2.a * sc2;
+        // //c2.a = c1.a * sc1 + c2.a * sc2;
+        // c2.b = c1.b * sc1 + c2.b * sc2;
+        // c2.g = c1.g * sc1 + c2.g * sc2;
+        // c2.r = c1.r * sc1 + c2.r * sc2;
+
+        float sc1 = c1.a;
+        float sc2 = (1. - c1.a);
         c2.b = c1.b * sc1 + c2.b * sc2;
         c2.g = c1.g * sc1 + c2.g * sc2;
         c2.r = c1.r * sc1 + c2.r * sc2;
@@ -421,6 +425,7 @@ void Render3::renderInner(int start, int end, FS_Drivers_t *drivers)
         if (c2.r > 1)
             c2.r = 1;
 
+        // TODO: put pixel in a '+' shape, but requires more blending
         buffer[bufIdx] = c2;
 
         colorTime = (micros() - nowl - warpTime + colorTime) / 2;

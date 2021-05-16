@@ -1,11 +1,6 @@
 #include <Arduino.h>
 #include "FreeRTOS.h"
-// #define PxMATRIX_SPI_SPEED 30000000
-// #define PxMATRIX_COLOR_DEPTH 16
-// #include <PxMatrix.h>
 #include <driver/i2s.h>
-// #include <I2S.h>
-// #include <SPI.h>
 #include <WindowBuffer.h>
 #include <FrequencySensor.h>
 #include <Render.h>
@@ -45,8 +40,8 @@ MatrixPanel_I2S_DMA *setupDisplay()
   mxconfig.driver = HUB75_I2S_CFG::FM6126A;
 
   auto display = new MatrixPanel_I2S_DMA(mxconfig);
-  display->setBrightness8(192); // 75%
-  display->setMinRefreshRate(200);
+  display->setBrightness8(255); // 75%
+  display->setMinRefreshRate(60);
   if (!display->begin())
   {
     Serial.println("failed to allocate for display!");
@@ -68,17 +63,8 @@ void HandleESPError(esp_err_t err, String msg)
 #define AUDIO_BUFFER_SIZE 512
 #define CHANNEL_NUMBER 0
 
-// I2S *i2sHandle;
-// QueueHandle_t audioReady;
-
 void setupI2S()
 {
-  // audioReady = xQueueCreate(8, 4);
-  // i2sHandle = new I2S(0, audioReady);
-
-  // i2sHandle->allocateDMABuffers(4*AUDIO_BUFFER_SIZE/AUDIO_INPUT_FRAME_SIZE, AUDIO_INPUT_FRAME_SIZE);
-  // i2sHandle->initAudioRXMode(&i2s_pin_config, &i2s_config);
-
   i2s_config_t i2s_config = {
     mode : (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
     sample_rate : 48000,
@@ -110,10 +96,6 @@ void setupI2S()
 
   i2s_start(I2S_NUM_0);
 }
-
-// void startI2S() {
-//   i2sHandle->startRX();
-// }
 
 Audio_Processor_t *audioProcessor;
 int rawBuffer[AUDIO_INPUT_FRAME_SIZE * 2];
@@ -179,14 +161,6 @@ void setup()
 {
   Serial.begin(115200);
 
-  // SPI.setDataMode(SPI_MODE0);
-  // SPI.setBitOrder(MSBFIRST);
-  // SPI.setHwCs(true);
-  // SPI.setFrequency(8000000);
-  // SPI.begin(14, 12, 13, 4);
-  // pinMode(4, OUTPUT);
-  // digitalWrite(4, HIGH);
-
   xTaskCreatePinnedToCore(
       render,
       "render",
@@ -206,47 +180,14 @@ void setup()
       0);
 
   serve(NULL);
-
-  // xTaskCreatePinnedToCore(
-  //     serve,
-  //     "server",
-  //     24000,
-  //     NULL,
-  //     2,
-  //     &server_task,
-  //     1);
 }
 
 float clutBuffer[90 * 25 * 3];
 Render3 *renderer;
 
-void showDisplay(Render3 *r)
-{
-  Color_RGB *buffer = renderer->getCurrentBuffer();
-
-  for (int y = 0; y < DISPLAY_HEIGHT / 2; y++)
-  {
-    for (int x = 0; x < DISPLAY_WIDTH / 2; x++)
-    {
-      int bidx = x + y * DISPLAY_WIDTH / 2;
-      Color_RGB c = buffer[bidx];
-
-      displayBuffer[bidx] = {
-          (uint8_t)(255 * c.r),
-          (uint8_t)(255 * c.g),
-          (uint8_t)(255 * c.b)};
-    }
-  }
-  // for (int i = 0; i < DISPLAY_BUFFER_SIZE / 128; i++) {
-  // digitalWrite(4, LOW);
-  // delayMicroseconds(1);
-  // SPI.writeBytes((uint8_t*)displayBuffer, DISPLAY_BUFFER_SIZE);
-  // digitalWrite(4, HIGH);
-  // }
-}
-void setPixel(int x, int y, Color_ABGR c) {}
-
-int targetFrameTime = 9;
+// frame time in ms (ticks)
+int targetFrameTime = 6;
+float renderFps = 0.0;
 
 void render(void *arg)
 {
@@ -266,8 +207,8 @@ void render(void *arg)
       .valueOffset = 0,
       .saturationScale = .6,
       .saturationOffset = .1,
-      .alphaScale = 0,
-      .alphaOffset = 0,
+      .alphaScale = 1.,
+      .alphaOffset = 0.,
       .maxAlpha = 0.5,
       .period = DISPLAY_WIDTH * 3,
       .colorScale = .25,
@@ -284,8 +225,8 @@ void render(void *arg)
   auto show = [=](Render3 *r) {
     // Serial.println("show display!");
     Color_RGB *buffer = renderer->getCurrentBuffer();
-    auto h = r->getRows();
-    auto w = r->getColumns();
+    auto h = DISPLAY_HEIGHT / 2;
+    auto w = DISPLAY_WIDTH / 2;
     for (int y = 0; y < h; y++)
     {
       for (int x = 0; x < w; x++)
@@ -297,7 +238,10 @@ void render(void *arg)
             (uint8_t)(255 * c.g),
             (uint8_t)(255 * c.b),
         };
-        display->drawPixelRGB888(x, y, c8.r, c8.g, c8.b);
+        display->drawPixelRGB888(w + x, h + y, c8.r, c8.g, c8.b);
+        display->drawPixelRGB888(w - x - 1, h + y, c8.r, c8.g, c8.b);
+        display->drawPixelRGB888(w + x, h - y - 1, c8.r, c8.g, c8.b);
+        display->drawPixelRGB888(w - x - 1, h - y - 1, c8.r, c8.g, c8.b);
       }
     }
   };
@@ -306,9 +250,8 @@ void render(void *arg)
                          &renderParams, &colorParams,
                          show);
 
-  TickType_t lastTime = xTaskGetTickCount();
-
-  long t = micros();
+  int frameCount = 0;
+  TickType_t fpsTime = xTaskGetTickCount();
 
   for (;;)
   {
@@ -316,6 +259,16 @@ void render(void *arg)
     {
       vTaskDelay(100);
       continue;
+    }
+
+    TickType_t lastTime = xTaskGetTickCount();
+    frameCount++;
+    if (frameCount % 256 == 0)
+    {
+      auto now = xTaskGetTickCount();
+      auto e = 1000.0 / ((float)(now - fpsTime) + 0.001);
+      fpsTime = now;
+      renderFps = .9 * renderFps + .1 * 256.0 * e;
     }
 
     renderer->render(audioProcessor->fs->drivers);
@@ -333,7 +286,8 @@ void loop()
 
 void makeJsonResponse(JsonObject root)
 {
-  root["frameRate"] = 1000 / targetFrameTime;
+  root["targetFrameRate"] = 1000 / targetFrameTime;
+  root["actualFrameRate"] = renderFps;
 
   JsonArray size = root.createNestedArray("size");
   size.add(renderer->getRows());
@@ -402,10 +356,10 @@ void setParamsFromJson(JsonObject root)
   Serial.println("set params from json");
   bool hasKey;
 
-  hasKey = root.containsKey("frameRate");
+  hasKey = root.containsKey("targetFrameRate");
   if (hasKey)
   {
-    int frameRate = root["frameRate"];
+    int frameRate = root["targetFrameRate"];
     targetFrameTime = 1000 / frameRate;
   }
 
@@ -602,7 +556,7 @@ void makeDebugResponse(JsonObject root, bool getRawInput)
 
   JsonObject perf = root.createNestedObject("perf");
   perf["renderFps"] = renderer->fps;
-  // perf["displayFps"] = displayFps;
+  perf["displayFps"] = renderFps;
   perf["renderInitTime"] = renderer->initTime;
   perf["renderColorTime"] = renderer->colorTime * renderer->getRows() * renderer->getColumns();
   perf["renderDrawTime"] = renderer->drawTime;
@@ -743,11 +697,4 @@ void serve(void *arg)
   Serial.println("begin server...");
 
   server.begin();
-
-  // for (;;)
-  // {
-  //   Serial.println(WiFi.localIP());
-  //   WiFi.printDiag(Serial);
-  //   vTaskDelay(8000);
-  // }
 }
