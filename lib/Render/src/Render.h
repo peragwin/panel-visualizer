@@ -3,7 +3,8 @@
 #include <functional>
 #include <FrequencySensor.h>
 #include "color.h"
-#include <FreeRTOS.h>
+#include "params.h"
+#include "WarpController.h"
 
 typedef struct
 {
@@ -17,7 +18,8 @@ typedef struct
     float period;
     float colorScale;
     ColorGamut_t gamut;
-    float *clut;
+    // float *clut;
+    uint8_t *clut;
 } ColorParams_t;
 
 typedef struct
@@ -48,16 +50,6 @@ void Render2(RenderMode2_t *r, FS_Drivers_t *drivers);
 
 typedef struct
 {
-    float warpScale;
-    float warpOffset;
-    float scaleScale;
-    float scaleOffset;
-    float aspectX;
-    float aspectY;
-} Render3_Params_t;
-
-typedef struct
-{
     float x;
     float y;
     int srcX;
@@ -78,21 +70,21 @@ private:
 
     Render3_Params_t *params;
     ColorParams_t *colorParams;
+    WarpController *warper;
+    WarpController *scaler;
 
     int renderCount;
     TickType_t lastRender;
 
     GridPoint_t *points;
 
-    Color_RGB **buffer;
+    Color_RGB8 **buffer;
     int currentBuffer;
 
     TaskHandle_t renderSubtasks[2];
     TaskHandle_t writeTaskHandle;
 
     displayFunc show;
-    // void (*setPixel)(int x, int y, Color_ABGR c);
-    // void (*show)(Render3 *r);
 
     void createRenderSubtask(int taskNum, const char *name);
     static void renderSubtask0(void *arg);
@@ -134,12 +126,10 @@ public:
         displayFunc show);
 
     void render(FS_Drivers_t *drivers);
-    Color_RGB *getCurrentBuffer();
+    Color_RGB8 *getCurrentBuffer();
     void setSize(int rows, int columns);
     int getRows() { return rows; };
     int getColumns() { return columns; };
     Render3_Params_t *getParams() { return params; };
     ColorParams_t *getColorParams() { return colorParams; };
 };
-
-// #endif

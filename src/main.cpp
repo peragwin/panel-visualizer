@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include "FreeRTOS.h"
+// #include "FreeRTOS.h"
 #include <driver/i2s.h>
 #include <WindowBuffer.h>
 #include <FrequencySensor.h>
@@ -20,16 +20,20 @@
 #define NUM_FRAMES 64
 
 #define I2S_NUM I2S_NUM_0
-#define I2S_BCK 22
-#define I2S_WS 2
-#define I2S_SD 32
-#define I2S_SO 33
+// #define I2S_BCK 22
+// #define I2S_WS 2
+// #define I2S_SD 32
+// #define I2S_SO 33
+#define I2S_BCK 21
+#define I2S_WS 22
+#define I2S_SD 4
+#define I2S_SO 23
 
 #include "wifi_credentials.h"
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASS;
 
-AsyncWebServer server(80);
+AsyncWebServer *server;
 
 MatrixPanel_I2S_DMA *display = nullptr;
 Color_RGB8 displayBuffer[DISPLAY_BUFFER_SIZE];
@@ -38,10 +42,13 @@ MatrixPanel_I2S_DMA *setupDisplay()
 {
   HUB75_I2S_CFG mxconfig(DISPLAY_WIDTH, DISPLAY_HEIGHT);
   mxconfig.driver = HUB75_I2S_CFG::FM6126A;
+  mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
+  mxconfig.i2sspeed = mxconfig.HZ_20M;
+  mxconfig.min_refresh_rate = 120;
 
   auto display = new MatrixPanel_I2S_DMA(mxconfig);
-  display->setBrightness8(255); // 75%
-  display->setMinRefreshRate(60);
+  display->setBrightness8(255);
+  // display->setMinRefreshRate(60);
   if (!display->begin())
   {
     Serial.println("failed to allocate for display!");
@@ -105,7 +112,7 @@ TaskHandle_t audioUpdateTask;
 void processAudioUpdate(void *arg)
 {
 
-  WindowBuffer *audioBuffer = new WindowBuffer(AUDIO_BUFFER_SIZE);
+  WindowBuffer<AUDIO_BUFFER_SIZE> audioBuffer;
 
   float convBuffer[AUDIO_INPUT_FRAME_SIZE];
   float frame[AUDIO_BUFFER_SIZE];
@@ -135,8 +142,8 @@ void processAudioUpdate(void *arg)
       convBuffer[i / 2] = (float)((rawBuffer[i] + rawBuffer[i + 1]) >> 8);
     }
 
-    audioBuffer->push(convBuffer, AUDIO_INPUT_FRAME_SIZE);
-    audioBuffer->get(frame, AUDIO_BUFFER_SIZE);
+    audioBuffer.push(convBuffer, AUDIO_INPUT_FRAME_SIZE);
+    audioBuffer.get(frame, AUDIO_BUFFER_SIZE);
 
     Audio_Process(audioProcessor, frame);
 
@@ -182,7 +189,7 @@ void setup()
   serve(NULL);
 }
 
-float clutBuffer[90 * 25 * 3];
+uint8_t clutBuffer[90 * 25 * 3];
 Render3 *renderer;
 
 // frame time in ms (ticks)
@@ -194,21 +201,27 @@ void render(void *arg)
   Serial.println("start render");
 
   Render3_Params_t renderParams = {
-      .warpScale = 16,
+      .warpScale = 128.,
       .warpOffset = .6,
-      .scaleScale = 2,
+      .warpP = 0.1,
+      .warpD = 0.,
+      .warpI = 0.01,
+      .scaleScale = 1.33,
       .scaleOffset = .5,
+      .scaleP = 4.,
+      .scaleD = 0.,
+      .scaleI = 0.2,
       .aspectX = 1,
       .aspectY = 1,
   };
 
   ColorParams_t colorParams = {
-      .valueScale = 2,
+      .valueScale = 1,
       .valueOffset = 0,
       .saturationScale = .6,
       .saturationOffset = .1,
-      .alphaScale = 1.,
-      .alphaOffset = 0.,
+      .alphaScale = 0.75,
+      .alphaOffset = 0.25,
       .maxAlpha = 0.5,
       .period = DISPLAY_WIDTH * 3,
       .colorScale = .25,
@@ -222,9 +235,10 @@ void render(void *arg)
 
   auto display = setupDisplay();
 
-  auto show = [=](Render3 *r) {
+  auto show = [=](Render3 *r)
+  {
     // Serial.println("show display!");
-    Color_RGB *buffer = renderer->getCurrentBuffer();
+    Color_RGB8 *buffer = renderer->getCurrentBuffer();
     auto h = DISPLAY_HEIGHT / 2;
     auto w = DISPLAY_WIDTH / 2;
     for (int y = 0; y < h; y++)
@@ -232,12 +246,12 @@ void render(void *arg)
       for (int x = 0; x < w; x++)
       {
         int bidx = x + y * w;
-        Color_RGB c = buffer[bidx];
-        Color_RGB8 c8 = {
-            (uint8_t)(255 * c.r),
-            (uint8_t)(255 * c.g),
-            (uint8_t)(255 * c.b),
-        };
+        Color_RGB8 c8 = buffer[bidx];
+        // Color_RGB8 c8 = {
+        //     (uint8_t)(255 * c.r),
+        //     (uint8_t)(255 * c.g),
+        //     (uint8_t)(255 * c.b),
+        // };
         display->drawPixelRGB888(w + x, h + y, c8.r, c8.g, c8.b);
         display->drawPixelRGB888(w - x - 1, h + y, c8.r, c8.g, c8.b);
         display->drawPixelRGB888(w + x, h - y - 1, c8.r, c8.g, c8.b);
@@ -262,25 +276,28 @@ void render(void *arg)
     }
 
     TickType_t lastTime = xTaskGetTickCount();
-    frameCount++;
-    if (frameCount % 256 == 0)
+    if (frameCount++ % 32 == 0)
     {
-      auto now = xTaskGetTickCount();
-      auto e = 1000.0 / ((float)(now - fpsTime) + 0.001);
-      fpsTime = now;
-      renderFps = .9 * renderFps + .1 * 256.0 * e;
+      auto e = 1000.0 / ((float)(lastTime - fpsTime) + 0.001);
+      fpsTime = lastTime;
+      renderFps = .9 * renderFps + .1 * 32.0 * e;
     }
 
     renderer->render(audioProcessor->fs->drivers);
 
-    vTaskDelayUntil(&lastTime, targetFrameTime);
+    // vTaskDelayUntil(&lastTime, 2); // targetFrameTime);
   }
 }
 
 void loop()
 {
-  Serial.println(WiFi.localIP());
-  WiFi.printDiag(Serial);
+  auto mode = WiFi.getMode();
+  if (mode != WIFI_MODE_NULL)
+  {
+    Serial.println(WiFi.localIP());
+    WiFi.printDiag(Serial);
+  }
+  Serial.printf("FPS: %0.2f %0.2f\r\n", renderer->fps, renderFps);
   delay(8000);
 }
 
@@ -295,23 +312,29 @@ void makeJsonResponse(JsonObject root)
 
   auto cp = renderer->getColorParams();
   auto ps = renderer->getParams();
-  JsonObject renderParams = root.createNestedObject("renderParams");
-  renderParams["valueScale"] = cp->valueScale;
-  renderParams["valueOffset"] = cp->valueOffset;
-  renderParams["saturationScale"] = cp->saturationScale;
-  renderParams["saturationOffset"] = cp->saturationOffset;
-  renderParams["alphaScale"] = cp->alphaScale;
-  renderParams["alphaOffset"] = cp->alphaOffset;
-  renderParams["maxAlpha"] = cp->maxAlpha;
-  renderParams["period"] = cp->period;
-  renderParams["colorScale"] = cp->colorScale;
-  renderParams["period"] = cp->period;
-  renderParams["warpScale"] = ps->warpScale;
-  renderParams["warpOffset"] = ps->warpOffset;
-  renderParams["scaleScale"] = ps->scaleScale;
-  renderParams["scaleOffset"] = ps->scaleOffset;
-  renderParams["aspectX"] = ps->aspectX;
-  renderParams["aspectY"] = ps->aspectY;
+  JsonObject rp = root.createNestedObject("renderParams");
+  rp["valueScale"] = cp->valueScale;
+  rp["valueOffset"] = cp->valueOffset;
+  rp["saturationScale"] = cp->saturationScale;
+  rp["saturationOffset"] = cp->saturationOffset;
+  rp["alphaScale"] = cp->alphaScale;
+  rp["alphaOffset"] = cp->alphaOffset;
+  rp["maxAlpha"] = cp->maxAlpha;
+  rp["period"] = cp->period;
+  rp["colorScale"] = cp->colorScale;
+  rp["period"] = cp->period;
+  rp["warpScale"] = ps->warpScale;
+  rp["warpOffset"] = ps->warpOffset;
+  rp["warpP"] = ps->warpP;
+  rp["warpD"] = ps->warpD;
+  rp["warpI"] = ps->warpI;
+  rp["scaleScale"] = ps->scaleScale;
+  rp["scaleOffset"] = ps->scaleOffset;
+  rp["scaleP"] = ps->scaleP;
+  rp["scaleD"] = ps->scaleD;
+  rp["scaleI"] = ps->scaleI;
+  rp["aspectX"] = ps->aspectX;
+  rp["aspectY"] = ps->aspectY;
 
   JsonObject audioParams = root.createNestedObject("audioParams");
   audioParams["gain"] = audioProcessor->fs->config->gain;
@@ -423,12 +446,36 @@ void setParamsFromJson(JsonObject root)
     hasKey = renderParams.containsKey("warpOffset");
     if (hasKey)
       ps->warpOffset = renderParams.getMember("warpOffset");
+    if (renderParams.containsKey("warpP"))
+    {
+      ps->warpP = renderParams["warpP"];
+    }
+    if (renderParams.containsKey("warpD"))
+    {
+      ps->warpD = renderParams["warpD"];
+    }
+    if (renderParams.containsKey("warpI"))
+    {
+      ps->warpI = renderParams["warpI"];
+    }
     hasKey = renderParams.containsKey("scaleScale");
     if (hasKey)
       ps->scaleScale = renderParams.getMember("scaleScale");
     hasKey = renderParams.containsKey("scaleOffset");
     if (hasKey)
       ps->scaleOffset = renderParams.getMember("scaleOffset");
+    if (renderParams.containsKey("scaleP"))
+    {
+      ps->scaleP = renderParams["scaleP"];
+    }
+    if (renderParams.containsKey("scaleD"))
+    {
+      ps->scaleD = renderParams["scaleD"];
+    }
+    if (renderParams.containsKey("scaleI"))
+    {
+      ps->scaleI = renderParams["scaleI"];
+    }
     hasKey = renderParams.containsKey("aspectX");
     if (hasKey)
       ps->aspectX = renderParams.getMember("aspectX");
@@ -607,38 +654,47 @@ void serve(void *arg)
 
   Serial.println("Init WiFi...");
 
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_AP);
   WiFi.setAutoReconnect(true);
   WiFi.setAutoConnect(true);
 
-  WiFi.begin(ssid, password);
-  while (!WiFi.isConnected())
-  {
-    Serial.printf("WiFi Failed: %d\n", WiFi.status());
-    vTaskDelay(2000);
-  }
+  // WiFi.begin(ssid, password);
+  WiFi.softAP(ssid, password);
+  WiFi.softAPsetHostname("vuzic-esp32");
 
-  auto addr = WiFi.localIP();
+  vTaskDelay(8000);
+
+  server = new AsyncWebServer(80);
+  // WiFi.begin();
+  // while (!WiFi.isConnected())
+  // {
+  //   Serial.printf("WiFi Failed: %d\n", WiFi.status());
+  //   vTaskDelay(2000);
+  // }
+
+  // auto addr = WiFi.localIP();
+  auto addr = WiFi.softAPIP();
   Serial.print("IP Address: ");
   Serial.println(addr);
 
   // AsyncServer server(80);
   // AsyncWebServer server(addr, 80);
 
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("got request to /");
+  server->on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+             {
+              Serial.println("got request to /");
 
-    AsyncJsonResponse *response = new AsyncJsonResponse();
-    response->addHeader("Server", "LED Panel Server");
-    JsonObject root = response->getRoot();
-    makeJsonResponse(root);
-    response->setLength();
+              AsyncJsonResponse *response = new AsyncJsonResponse();
+              response->addHeader("Server", "LED Panel Server");
+              JsonObject root = response->getRoot();
+              makeJsonResponse(root);
+              response->setLength();
 
-    request->send(response);
-  });
+              request->send(response); });
 
   AsyncCallbackJsonWebHandler *handler = new AsyncCallbackJsonWebHandler("/",
-                                                                         [](AsyncWebServerRequest *request, JsonVariant json) {
+                                                                         [](AsyncWebServerRequest *request, JsonVariant json)
+                                                                         {
                                                                            JsonObject obj = json.as<JsonObject>();
 
                                                                            setParamsFromJson(obj);
@@ -651,7 +707,7 @@ void serve(void *arg)
 
                                                                            request->send(response);
                                                                          });
-  server.addHandler(handler);
+  server->addHandler(handler);
 
   // server.on("/", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
   //   [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
@@ -666,35 +722,35 @@ void serve(void *arg)
 
   // });
 
-  server.on("/debug", HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("got /debug");
+  server->on("/debug", HTTP_GET, [](AsyncWebServerRequest *request)
+             {
+              Serial.println("got /debug");
 
-    AsyncJsonResponse *response = new AsyncJsonResponse(false, 8196);
-    response->addHeader("Server", "LED Panel Server");
-    JsonObject root = response->getRoot();
+              AsyncJsonResponse *response = new AsyncJsonResponse(false, 8196);
+              response->addHeader("Server", "LED Panel Server");
+              JsonObject root = response->getRoot();
 
-    // bool getRawInput = request->getParam("rawInput");
-    makeDebugResponse(root, false);
+              // bool getRawInput = request->getParam("rawInput");
+              makeDebugResponse(root, false);
 
-    response->setLength();
-    request->send(response);
-  });
+              response->setLength();
+              request->send(response); });
 
-  server.on("/rawinput", HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("get /rawinput");
-    AsyncJsonResponse *response = new AsyncJsonResponse(false, 8196);
-    JsonObject root = response->getRoot();
-    makeDebugResponse(root, true);
-    response->setLength();
-    request->send(response);
-  });
+  server->on("/rawinput", HTTP_GET, [](AsyncWebServerRequest *request)
+             {
+                Serial.println("get /rawinput");
+                AsyncJsonResponse *response = new AsyncJsonResponse(false, 8196);
+                JsonObject root = response->getRoot();
+                makeDebugResponse(root, true);
+                response->setLength();
+                request->send(response); });
 
-  server.onNotFound([](AsyncWebServerRequest *request) {
-    Serial.println("got request to 404");
-    request->send(404, "text/plain", "Not found");
-  });
+  server->onNotFound([](AsyncWebServerRequest *request)
+                     {
+                      Serial.println("got request to 404");
+                      request->send(404, "text/plain", "Not found"); });
 
   Serial.println("begin server...");
 
-  server.begin();
+  server->begin();
 }

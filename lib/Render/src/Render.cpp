@@ -23,7 +23,8 @@ static float sigmoid(float x)
     return (1.0 + x / (1.0 + a)) / 2.0;
 }
 
-void clut(float *t, float hue, float sat, float val, float *r, float *g, float *b)
+template <typename T>
+void clut(T *t, float hue, float sat, float val, T *r, T *g, T *b)
 {
     int ti = (int)(val / 4) + 25 * (int)(hue / 4);
     ti *= 3;
@@ -32,7 +33,42 @@ void clut(float *t, float hue, float sat, float val, float *r, float *g, float *
     *b = t[ti + 2];
 }
 
-static Color_ABGRf get_hsv(ColorParams_t *params, float amp, float phase, float phi)
+// static Color_ABGRf get_hsv(ColorParams_t *params, float amp, float phase, float phi)
+// {
+//     float vs = params->valueScale;
+//     float vo = params->valueOffset;
+//     float ss = params->saturationScale;
+//     float so = params->saturationOffset;
+//     float as = params->alphaScale;
+//     float ao = params->alphaOffset;
+//     float cs = params->colorScale;
+
+//     float hue = fmod(180 * (cs * phi + phase) / PI, 360);
+//     if (hue < 0)
+//         hue += 360;
+
+//     // float sat = sigmoid(ss * amp + so);
+//     float val = ss * sigmoid(vs * amp + vo) + so;
+//     float alp = sigmoid(as * amp + ao);
+
+//     float r, g, b;
+//     if (params->clut == NULL)
+//     {
+//         // hsluv2rgb(hue, 100, 100 * (double)val, &r, &g, &b);
+//     }
+//     else
+//     {
+//         clut<float>(params->clut, hue, 100, 100 * val, &r, &g, &b);
+//     }
+//     // r *= r;
+//     // g *= g;
+//     // b *= b;
+
+//     Color_ABGRf c = {alp, (float)b, (float)g, (float)r};
+//     return c;
+// }
+
+static Color_ABGR get_hsv8(ColorParams_t *params, float amp, float phase, float phi)
 {
     float vs = params->valueScale;
     float vo = params->valueOffset;
@@ -50,20 +86,20 @@ static Color_ABGRf get_hsv(ColorParams_t *params, float amp, float phase, float 
     float val = ss * sigmoid(vs * amp + vo) + so;
     float alp = sigmoid(as * amp + ao);
 
-    float r, g, b;
+    uint8_t r, g, b;
     if (params->clut == NULL)
     {
         // hsluv2rgb(hue, 100, 100 * (double)val, &r, &g, &b);
     }
     else
     {
-        clut(params->clut, hue, 100, 100 * val, &r, &g, &b);
+        clut<uint8_t>(params->clut, hue, 100, 100 * val, &r, &g, &b);
     }
-    r *= r;
-    g *= g;
-    b *= b;
+    // r *= r;
+    // g *= g;
+    // b *= b;
 
-    Color_ABGRf c = {alp, (float)b, (float)g, (float)r};
+    Color_ABGR c = {(uint8_t)(alp * 255), b, g, r};
     return c;
 }
 
@@ -111,6 +147,8 @@ Render3::Render3(
     GridPoint_t *points = new GridPoint_t[MAX_ROWS * MAX_COLUMNS];
     this->points = points;
     initGridPoints(rows, columns);
+    warper = new WarpController(rows);
+    scaler = new WarpController(columns);
 
     if (this->colorParams->clut != NULL)
     {
@@ -121,19 +159,18 @@ Render3::Render3(
                 double re, g, b;
                 hsluv2rgb((double)h * 4, 100, (double)v * 4, &re, &g, &b);
 
-                int ti = (int)v + 25 * (int)h;
-                ti *= 3;
-                this->colorParams->clut[ti] = (float)re;
-                this->colorParams->clut[ti + 1] = (float)g;
-                this->colorParams->clut[ti + 2] = (float)b;
+                int ti = 3 * ((int)v + 25 * (int)h);
+                this->colorParams->clut[ti] = re * re * 255;
+                this->colorParams->clut[ti + 1] = g * g * 255;
+                this->colorParams->clut[ti + 2] = b * b * 255;
             }
         }
     }
 
     int dsize = displayWidth * displayHeight / 4;
-    buffer = (Color_RGB **)malloc(2 * sizeof(Color_RGB *));
-    buffer[0] = (Color_RGB *)malloc(dsize * sizeof(Color_RGB));
-    buffer[1] = (Color_RGB *)malloc(dsize * sizeof(Color_RGB));
+    buffer = (Color_RGB8 **)malloc(2 * sizeof(Color_RGB8 *));
+    buffer[0] = (Color_RGB8 *)malloc(dsize * sizeof(Color_RGB8));
+    buffer[1] = (Color_RGB8 *)malloc(dsize * sizeof(Color_RGB8));
     this->currentBuffer = 0;
 
     startDraw = xQueueCreate(4, sizeof(int));
@@ -215,6 +252,11 @@ void Render3::setSize(int rows, int columns)
     initGridPoints(rows, columns);
     this->rows = rows;
     this->columns = columns;
+    // fixme.. but this method shouldn't really be needed, or if so, the whole thing should be reinit
+    delete warper;
+    delete scaler;
+    warper = new WarpController(rows);
+    scaler = new WarpController(columns);
 }
 
 inline void Render3::getDisplayXY(GridPoint_t *g, int w, int h, int *x, int *y)
@@ -303,14 +345,25 @@ void Render3::render(FS_Drivers_t *drivers)
         return;
     }
 
-    Color_RGB *buffer = this->buffer[currentBuffer];
+    Color_RGB8 *buffer = this->buffer[currentBuffer];
     this->currentBuffer = currentBuffer;
+    memset(buffer, 0, sizeof(Color_RGB8) * dsize);
 
-    for (int i = 0; i < dsize; i++)
+    float warps[rows];
+    for (int i = 0; i < rows; i++)
     {
-        Color_RGB c = {0, 0, 0};
-        buffer[i] = c;
+        warps[i] = drivers->diff[i]; // * params->diffGain;
     }
+    warper->computeWarp(warps, params->warpP, params->warpD, params->warpI);
+    float scales[columns];
+    for (int i = 0; i < columns; i++)
+    {
+        int column = drivers->columnIdx - i;
+        if (column < 0)
+            column += drivers->length;
+        scales[i] = drivers->ampAverage[column];
+    }
+    scaler->computeWarp(scales, params->scaleP, params->scaleD, params->scaleI);
 
     initTime = micros() - now;
 
@@ -346,10 +399,9 @@ void Render3::renderInner(int start, int end, FS_Drivers_t *drivers)
     float scaleScale = params->scaleScale;
     float scaleOffset = params->scaleOffset;
 
-    Color_RGB *buffer = getCurrentBuffer();
+    Color_RGB8 *buffer = getCurrentBuffer();
 
     float *amps[drivers->length];
-    float scales[drivers->length];
     for (int i = 0; i < drivers->length; i++)
     {
         int column = drivers->columnIdx - i;
@@ -357,8 +409,6 @@ void Render3::renderInner(int start, int end, FS_Drivers_t *drivers)
             column += drivers->length;
 
         amps[i] = drivers->amp[column];
-
-        scales[i] = drivers->ampAverage[column];
     }
 
     long nowl;
@@ -369,9 +419,13 @@ void Render3::renderInner(int start, int end, FS_Drivers_t *drivers)
         nowl = micros();
 
         int wi = g.srcY; // rows - 1 - g.srcY;
-        float warp = warpScale * drivers->diff[wi] + warpOffset;
+        float warp = warpScale * warper->getWarp(wi) + warpOffset;
+        // if (i == 0)
+        // {
+        //     Serial.println(warper->getWarp(wi));
+        // }
         int si = g.srcX; // columns - 1 - g.srcX;
-        float scale = scaleScale * scales[si] + scaleOffset;
+        float scale = scaleScale * scaler->getWarp(si) + scaleOffset;
         GridPoint_t p = applyWarp(&g, warp, scale);
         int x, y;
         getDisplayXY(&p, displayWidth / 2, displayHeight / 2, &x, &y);
@@ -394,8 +448,8 @@ void Render3::renderInner(int start, int end, FS_Drivers_t *drivers)
             continue;
         }
 
-        Color_ABGRf c1 = get_hsv(colorParams, amp, phase, phi);
-        Color_RGB c2 = buffer[bufIdx];
+        Color_ABGR c1 = get_hsv8(colorParams, amp, phase, phi);
+        Color_RGB8 c2 = buffer[bufIdx];
 
         // Serial.print("rendeer ln 277 ");
         // Serial.println(i);
@@ -411,19 +465,19 @@ void Render3::renderInner(int start, int end, FS_Drivers_t *drivers)
         // c2.g = c1.g * sc1 + c2.g * sc2;
         // c2.r = c1.r * sc1 + c2.r * sc2;
 
-        float sc1 = c1.a;
-        float sc2 = (1. - c1.a);
-        c2.b = c1.b * sc1 + c2.b * sc2;
-        c2.g = c1.g * sc1 + c2.g * sc2;
-        c2.r = c1.r * sc1 + c2.r * sc2;
+        int sc1 = c1.a;
+        int sc2 = (255 - c1.a);
+        c2.b = ((int)c1.b * sc1 + (int)c2.b * sc2) >> 8;
+        c2.g = ((int)c1.g * sc1 + (int)c2.g * sc2) >> 8;
+        c2.r = ((int)c1.r * sc1 + (int)c2.r * sc2) >> 8;
 
-        //if (c2.a > 1) c2.a = 1;
-        if (c2.b > 1)
-            c2.b = 1;
-        if (c2.g > 1)
-            c2.g = 1;
-        if (c2.r > 1)
-            c2.r = 1;
+        // if (c2.a > 1) c2.a = 1;
+        if (c2.b > 255)
+            c2.b = 255;
+        if (c2.g > 255)
+            c2.g = 255;
+        if (c2.r > 255)
+            c2.r = 255;
 
         // TODO: put pixel in a '+' shape, but requires more blending
         buffer[bufIdx] = c2;
@@ -511,7 +565,7 @@ void Render3::write()
     }
 }
 
-Color_RGB *Render3::getCurrentBuffer()
+Color_RGB8 *Render3::getCurrentBuffer()
 {
     return buffer[currentBuffer];
 }
