@@ -19,15 +19,25 @@
 #define NUM_BUCKETS 16
 #define NUM_FRAMES 64
 
+// #define I2S_PDM
 #define I2S_NUM I2S_NUM_0
 // #define I2S_BCK 22
 // #define I2S_WS 2
 // #define I2S_SD 32
 // #define I2S_SO 33
-#define I2S_BCK 21
-#define I2S_WS 22
-#define I2S_SD 4
-#define I2S_SO 23
+// #define I2S_BCK 21
+// #define I2S_WS 22
+// #define I2S_SD 4
+// #define I2S_SO 23
+#ifdef I2S_PDM
+#define I2S_CLK 21
+#define I2S_DAT 22
+#else
+#define I2S_BCK 22
+#define I2S_WS 21
+#define I2S_SD 32
+#define I2S_SO 33
+#endif
 
 #include "wifi_credentials.h"
 const char *ssid = WIFI_SSID;
@@ -42,9 +52,11 @@ MatrixPanel_I2S_DMA *setupDisplay()
 {
   HUB75_I2S_CFG mxconfig(DISPLAY_WIDTH, DISPLAY_HEIGHT);
   mxconfig.driver = HUB75_I2S_CFG::FM6126A;
-  mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
+  // mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
+  mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 13, 12, 23, 19, 5, 18, -1, 4, 16, 17};
   mxconfig.i2sspeed = mxconfig.HZ_20M;
   mxconfig.min_refresh_rate = 120;
+  mxconfig.clkphase = false;
 
   auto display = new MatrixPanel_I2S_DMA(mxconfig);
   display->setBrightness8(255);
@@ -72,6 +84,23 @@ void HandleESPError(esp_err_t err, String msg)
 
 void setupI2S()
 {
+#ifdef I2S_PDM
+  i2s_config_t i2s_config = {
+    mode : (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
+    sample_rate : 48000,
+    bits_per_sample : I2S_BITS_PER_SAMPLE_16BIT,
+    channel_format : I2S_CHANNEL_FMT_ONLY_LEFT,
+    communication_format : (i2s_comm_format_t)(I2S_COMM_FORMAT_STAND_PCM_SHORT),
+    intr_alloc_flags : 0,
+    dma_buf_count : 4,
+    dma_buf_len : AUDIO_INPUT_FRAME_SIZE / 2,
+    use_apll : true
+  };
+  i2s_pin_config_t i2s_pin_config = {
+    ws_io_num : I2S_CLK,
+    data_in_num : I2S_DAT
+  };
+#else
   i2s_config_t i2s_config = {
     mode : (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
     sample_rate : 48000,
@@ -90,6 +119,7 @@ void setupI2S()
     data_out_num : I2S_SO,
     data_in_num : I2S_SD
   };
+#endif
 
   HandleESPError(
       i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL),
@@ -105,7 +135,11 @@ void setupI2S()
 }
 
 Audio_Processor_t *audioProcessor;
+#ifdef I2S_PDM
+uint16_t rawBuffer[AUDIO_INPUT_FRAME_SIZE];
+#else
 int rawBuffer[AUDIO_INPUT_FRAME_SIZE * 2];
+#endif
 long processTime = 0;
 
 TaskHandle_t audioUpdateTask;
@@ -126,9 +160,15 @@ void processAudioUpdate(void *arg)
   for (;;)
   {
 
+#ifdef I2S_PDM
+    size_t frame_size = 2 * AUDIO_INPUT_FRAME_SIZE;
+#else
+    size_t frame_size = 4 * 2 * AUDIO_INPUT_FRAME_SIZE;
+#endif
+
     size_t bytesRead;
     HandleESPError(
-        i2s_read(I2S_NUM, rawBuffer, 4 * 2 * AUDIO_INPUT_FRAME_SIZE, &bytesRead, (size_t)(AUDIO_INPUT_FRAME_SIZE / 48)),
+        i2s_read(I2S_NUM, rawBuffer, frame_size, &bytesRead, (size_t)(AUDIO_INPUT_FRAME_SIZE / 48)),
         "failed to rx i2s");
     if (!bytesRead)
       continue;
@@ -137,10 +177,19 @@ void processAudioUpdate(void *arg)
 
     long now = micros();
 
+#ifdef I2S_PDM
+    for (int i = 0; i < AUDIO_INPUT_FRAME_SIZE; i++)
+    {
+      // Serial.printf("L: %08x\r\n", rawBuffer[i] << 8);
+      convBuffer[i] = (float)(rawBuffer[i] << 8);
+    }
+#else
     for (int i = CHANNEL_NUMBER; i < 2 * AUDIO_INPUT_FRAME_SIZE; i += 2)
     {
+      // Serial.printf("L: %d R: %d\r\n", rawBuffer[i], rawBuffer[i + 1]);
       convBuffer[i / 2] = (float)((rawBuffer[i] + rawBuffer[i + 1]) >> 8);
     }
+#endif
 
     audioBuffer.push(convBuffer, AUDIO_INPUT_FRAME_SIZE);
     audioBuffer.get(frame, AUDIO_BUFFER_SIZE);
