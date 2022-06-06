@@ -25,18 +25,18 @@
 // #define I2S_WS 2
 // #define I2S_SD 32
 // #define I2S_SO 33
-// #define I2S_BCK 21
-// #define I2S_WS 22
-// #define I2S_SD 4
-// #define I2S_SO 23
+#define I2S_BCK 21
+#define I2S_WS 22
+#define I2S_SD 4
+#define I2S_SO 23
 #ifdef I2S_PDM
 #define I2S_CLK 21
 #define I2S_DAT 22
 #else
-#define I2S_BCK 22
-#define I2S_WS 21
-#define I2S_SD 32
-#define I2S_SO 33
+// #define I2S_BCK 22
+// #define I2S_WS 21
+// #define I2S_SD 32
+// #define I2S_SO 33
 #endif
 
 #include "wifi_credentials.h"
@@ -52,8 +52,8 @@ MatrixPanel_I2S_DMA *setupDisplay()
 {
   HUB75_I2S_CFG mxconfig(DISPLAY_WIDTH, DISPLAY_HEIGHT);
   mxconfig.driver = HUB75_I2S_CFG::FM6126A;
-  // mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
-  mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 13, 12, 23, 19, 5, 18, -1, 4, 16, 17};
+  mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
+  // mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 13, 12, 23, 19, 5, 18, -1, 4, 16, 17};
   mxconfig.i2sspeed = mxconfig.HZ_20M;
   mxconfig.min_refresh_rate = 120;
   mxconfig.clkphase = false;
