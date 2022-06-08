@@ -1,0 +1,3 @@
+[submodule "lib/ParticleLife"]
+	path = lib/ParticleLife
+	url = git@github.com:peragwin/particle-life-embedded

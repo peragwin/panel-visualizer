@@ -6,6 +6,14 @@
 #include "params.h"
 #include "WarpController.h"
 
+static float sigmoid(float x)
+{
+    float a = x;
+    if (x < 0)
+        a = -a;
+    return (1.0 + x / (1.0 + a)) / 2.0;
+}
+
 typedef struct
 {
     float valueScale;

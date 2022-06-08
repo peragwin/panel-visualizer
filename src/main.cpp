@@ -11,6 +11,11 @@
 #include <AsyncJson.h>
 #include <ArduinoJson.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#include <Universe.h>
+#include <audio_coef.h>
+#include <BLEDevice.h>
+#include "hsluv.h"
+#include <Configlets.h>
 
 #define DISPLAY_WIDTH 64
 #define DISPLAY_HEIGHT 32
@@ -39,14 +44,22 @@
 // #define I2S_SO 33
 #endif
 
+#define BUTTON_PIN 39
+
+#define AUDIO_TASK_CORE 0
+#define RENDER_TASK_CORE 0
+#define ITERATE_TASK_CORE 1
+
 #include "wifi_credentials.h"
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASS;
 
+Registry registry;
+
 AsyncWebServer *server;
 
 MatrixPanel_I2S_DMA *display = nullptr;
-Color_RGB8 displayBuffer[DISPLAY_BUFFER_SIZE];
+Color_RGB8 displayBuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT] = {0};
 
 MatrixPanel_I2S_DMA *setupDisplay()
 {
@@ -213,29 +226,50 @@ void draw(void *arg);
 TaskHandle_t server_task;
 void serve(void *arg);
 
+auto render_fps = registry.newFloatValue("fps", "status");
+
 void setup()
 {
   Serial.begin(115200);
+  pinMode(BUTTON_PIN, INPUT);
 
   xTaskCreatePinnedToCore(
       render,
       "render",
-      8000,
+      8192,
       NULL,
       6,
       &render_task,
-      1);
+      RENDER_TASK_CORE);
 
   xTaskCreatePinnedToCore(
       processAudioUpdate,
       "audioUpdate",
-      24000,
+      8192 * 3,
       NULL,
       4,
       &audioUpdateTask,
-      0);
+      AUDIO_TASK_CORE);
 
-  serve(NULL);
+  xTaskCreatePinnedToCore([](void *arg)
+                          {
+    for (;;)
+    {
+      auto mode = WiFi.getMode();
+      if (mode != WIFI_MODE_NULL)
+      {
+        Serial.println(WiFi.localIP());
+        WiFi.printDiag(Serial);
+      }
+      Serial.printf("FPS: %0.2f\r\n", render_fps->value());
+
+      vTaskDelay(pdMS_TO_TICKS(8000));
+    } },
+                          "info_task", 8192, NULL, 8, NULL, RENDER_TASK_CORE);
+
+  // BLEDevice::init("vuzic-esp32");
+
+  // serve(NULL);
 }
 
 uint8_t clutBuffer[90 * 25 * 3];
@@ -243,9 +277,190 @@ Render3 *renderer;
 
 // frame time in ms (ticks)
 int targetFrameTime = 6;
-float renderFps = 0.0;
+
+#define NUM_TYPES NUM_BUCKETS
+
+void iterate(void *arg)
+{
+  Universe *universe = (Universe *)arg;
+
+  auto types = universe->GetTypes();
+  float base_attractors[NUM_TYPES][NUM_TYPES];
+  for (int i = 0; i < NUM_TYPES; i++)
+  {
+    for (int j = 0; j < NUM_TYPES; j++)
+    {
+      base_attractors[i][j] = types->Attract(i, j);
+    }
+  }
+
+  float audio_coef[NUM_BUCKETS][NUM_TYPES];
+  construct_audio_coefficients<NUM_BUCKETS, NUM_TYPES>(audio_coef);
+
+  const float some_constant = 0.1;
+
+  for (;;)
+  {
+    auto idx = audioProcessor->fs->columnIdx;
+    auto audio = audioProcessor->fs->drivers->amp[idx];
+    auto scale = audioProcessor->fs->drivers->scales;
+    for (int i = 0; i < NUM_BUCKETS; i++)
+    {
+      auto aval = scale[i] * (audio[i] - 1.0f);
+      auto a = min(max(aval, -4.0f), 4.0f);
+      for (int j = 0; j < NUM_TYPES; j++)
+      {
+        types->SetAttract(i, j, base_attractors[i][j] + some_constant * a * audio_coef[i][j]);
+      }
+    }
+
+    universe->Step();
+
+    xTaskNotify(render_task, 1, eNoAction);
+    vPortYield();
+  }
+}
 
 void render(void *arg)
+{
+  auto vars = Configlets::VariableGroup("render.particle-life", registry);
+
+  Serial.println("particle life render");
+  auto seed = esp_random();
+  Serial.printf("seed: %d\r\n", seed);
+  {
+    auto s = vars.newIntValue("seed");
+    s->value() = seed;
+  }
+
+  DynamicJsonDocument doc(2048);
+  JsonObject js = doc.to<JsonObject>();
+  registry.dumpJson(js);
+  serializeJsonPretty(doc, Serial);
+
+  Universe universe(NUM_TYPES, 128, 64, 32, seed);
+  universe.ReSeed(0.0, 0.04, 0.0, 5.0, 5.0, 24.0, 0.2, false);
+  universe.ToggleWrap();
+
+  bool reseed = false;
+  size_t last_reseed = millis();
+  attachInterruptArg(
+      BUTTON_PIN, [](void *arg)
+      { *(bool *)arg = !digitalRead(BUTTON_PIN); },
+      &reseed, FALLING);
+
+  auto types = universe.GetTypes();
+  float base_attractors[NUM_TYPES][NUM_TYPES];
+  for (int i = 0; i < NUM_TYPES; i++)
+  {
+    double r, g, b;
+    hsluv2rgb(360. * (double)i / (double)NUM_TYPES, 100., 50., &r, &g, &b);
+    types->SetColor(i, ColorRGB(255 * (r * r), 255 * (g * g), 255 * (b * b)));
+
+    for (int j = 0; j < NUM_TYPES; j++)
+    {
+      base_attractors[i][j] = types->Attract(i, j);
+    }
+  }
+
+  Serial.println("setup universe");
+
+  auto display = setupDisplay();
+  Serial.println("setup display");
+
+  auto drawParticle = [display](Particle &p, ColorRGB c)
+  {
+    auto idx = (uint16_t)p.x + (uint16_t)p.y * DISPLAY_WIDTH;
+    displayBuffer[idx].r = c.r;
+    displayBuffer[idx].g = c.g;
+    displayBuffer[idx].b = c.b;
+  };
+
+  int frameCount = 0;
+  TickType_t fpsTime = xTaskGetTickCount();
+
+  while (!audioProcessor)
+  {
+    vTaskDelay(10);
+  }
+
+  xTaskCreatePinnedToCore(iterate, "iterate_task", 4096, (void *)&universe, 5, NULL, ITERATE_TASK_CORE);
+
+  auto color_scale = vars.newFloatValue("color_scale", 1.0, 0.0, 2.0, 0.01);
+  auto lightness_scale = vars.newFloatValue("lightness_scale", 0.1, 0.0, 2.0, 0.01);
+  auto lightness_offset = vars.newFloatValue("lightness_offset", 0.5, 0.0, 1.0, 0.01);
+  auto color_spread = vars.newFloatValue("color_spread", 8., 0.0, 60., 1.);
+  auto fade_value = vars.newFloatValue("fade", 0.96, 0.0, 1.0, 0.01);
+
+  for (;;)
+  {
+    if (reseed)
+    {
+      reseed = false;
+      auto now = millis();
+      if (now - last_reseed > 200)
+      {
+        last_reseed = now;
+        randomSeed(esp_random());
+        universe.ReSeed(0.0, 0.04, 0.0, 5.0, 5.0, 24.0, 0.2, false);
+      }
+    }
+
+    // fade display
+    uint16_t fade = 256 * fade_value->value();
+    for (auto &c : displayBuffer)
+    {
+      c.r = ((uint16_t)c.r * fade) >> 8;
+      c.g = ((uint16_t)c.g * fade) >> 8;
+      c.b = ((uint16_t)c.b * fade) >> 8;
+    }
+
+    auto idx = audioProcessor->fs->columnIdx;
+    auto audio = audioProcessor->fs->drivers->amp[idx];
+    auto scale = audioProcessor->fs->drivers->scales;
+    auto energy = audioProcessor->fs->drivers->energy;
+    auto ls = lightness_scale->value();
+    auto lo = lightness_offset->value();
+    auto csp = color_spread->value();
+    auto csc = color_scale->value();
+    for (int i = 0; i < NUM_BUCKETS; i++)
+    {
+      auto aval = scale[i] * (audio[i] - 1.0f);
+      auto cval = ls * sigmoid(aval) + lo;
+
+      double r, g, b;
+      float hue = fmod(180 * csc * energy[i] / PI + csp * i, 360);
+      if (hue < 0)
+        hue += 360;
+      hsluv2rgb(hue, 100., 100. * cval, &r, &g, &b);
+      types->SetColor(i, ColorRGB(255 * r * r, 255 * g * g, 255 * b * b));
+    }
+
+    xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
+    universe.IterParticles(drawParticle);
+
+    for (int16_t j = 0; j < DISPLAY_HEIGHT; j++)
+    {
+      for (int16_t i = 0; i < DISPLAY_WIDTH; i++)
+      {
+        auto &c = displayBuffer[i + j * DISPLAY_WIDTH];
+        display->drawPixelRGB888(i, j, c.r, c.g, c.b);
+      }
+    }
+
+    TickType_t lastTime = xTaskGetTickCount();
+    if (frameCount++ % 32 == 0)
+    {
+      auto e = 1000.0 / ((float)(lastTime - fpsTime) + 0.001);
+      fpsTime = lastTime;
+      render_fps->value() = .9 * render_fps->value() + .1 * 32.0 * e;
+    }
+
+    vPortYield();
+  }
+}
+
+void render_old(void *arg)
 {
   Serial.println("start render");
 
@@ -329,7 +544,7 @@ void render(void *arg)
     {
       auto e = 1000.0 / ((float)(lastTime - fpsTime) + 0.001);
       fpsTime = lastTime;
-      renderFps = .9 * renderFps + .1 * 32.0 * e;
+      render_fps->value() = .9 * render_fps->value() + .1 * 32.0 * e;
     }
 
     renderer->render(audioProcessor->fs->drivers);
@@ -340,20 +555,13 @@ void render(void *arg)
 
 void loop()
 {
-  auto mode = WiFi.getMode();
-  if (mode != WIFI_MODE_NULL)
-  {
-    Serial.println(WiFi.localIP());
-    WiFi.printDiag(Serial);
-  }
-  Serial.printf("FPS: %0.2f %0.2f\r\n", renderer->fps, renderFps);
-  delay(8000);
+  delay(100);
 }
 
 void makeJsonResponse(JsonObject root)
 {
   root["targetFrameRate"] = 1000 / targetFrameTime;
-  root["actualFrameRate"] = renderFps;
+  root["actualFrameRate"] = render_fps->value();
 
   JsonArray size = root.createNestedArray("size");
   size.add(renderer->getRows());
@@ -424,7 +632,6 @@ void makeJsonResponse(JsonObject root)
 
 void setParamsFromJson(JsonObject root)
 {
-
   Serial.println("set params from json");
   bool hasKey;
 
@@ -652,7 +859,7 @@ void makeDebugResponse(JsonObject root, bool getRawInput)
 
   JsonObject perf = root.createNestedObject("perf");
   perf["renderFps"] = renderer->fps;
-  perf["displayFps"] = renderFps;
+  perf["displayFps"] = render_fps->value();
   perf["renderInitTime"] = renderer->initTime;
   perf["renderColorTime"] = renderer->colorTime * renderer->getRows() * renderer->getColumns();
   perf["renderDrawTime"] = renderer->drawTime;

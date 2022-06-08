@@ -15,14 +15,6 @@
 #define MAX_ROWS 16
 #define MAX_COLUMNS 64
 
-static float sigmoid(float x)
-{
-    float a = x;
-    if (x < 0)
-        a = -a;
-    return (1.0 + x / (1.0 + a)) / 2.0;
-}
-
 template <typename T>
 void clut(T *t, float hue, float sat, float val, T *r, T *g, T *b)
 {
