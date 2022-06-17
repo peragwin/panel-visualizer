@@ -17,6 +17,36 @@
 #include "hsluv.h"
 #include <Configlets.h>
 
+//#define VUZIC_REVA
+#define VUZIC_REVB
+
+#ifdef VUZIC_REVA
+
+#define I2S_BCK 21
+#define I2S_WS 22
+#define I2S_SD 4
+#define I2S_SO 23
+
+#define BUTTON_PIN 39
+
+// int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
+const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
+
+#endif
+
+#ifdef VUZIC_REVB
+
+#define I2S_PDM
+#define I2S_CLK 12
+#define I2S_DAT 14
+
+#define BUTTON_PIN 35
+
+// int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
+const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32, 33, 5, 13, -1, 26, 27, 25};
+
+#endif
+
 #define DISPLAY_WIDTH 64
 #define DISPLAY_HEIGHT 32
 #define DISPLAY_BUFFER_SIZE (DISPLAY_WIDTH * DISPLAY_HEIGHT * 3 / 4)
@@ -24,27 +54,7 @@
 #define NUM_BUCKETS 16
 #define NUM_FRAMES 64
 
-// #define I2S_PDM
 #define I2S_NUM I2S_NUM_0
-// #define I2S_BCK 22
-// #define I2S_WS 2
-// #define I2S_SD 32
-// #define I2S_SO 33
-#define I2S_BCK 21
-#define I2S_WS 22
-#define I2S_SD 4
-#define I2S_SO 23
-#ifdef I2S_PDM
-#define I2S_CLK 21
-#define I2S_DAT 22
-#else
-// #define I2S_BCK 22
-// #define I2S_WS 21
-// #define I2S_SD 32
-// #define I2S_SO 33
-#endif
-
-#define BUTTON_PIN 39
 
 #define AUDIO_TASK_CORE 0
 #define RENDER_TASK_CORE 0
@@ -65,15 +75,13 @@ MatrixPanel_I2S_DMA *setupDisplay()
 {
   HUB75_I2S_CFG mxconfig(DISPLAY_WIDTH, DISPLAY_HEIGHT);
   mxconfig.driver = HUB75_I2S_CFG::FM6126A;
-  mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
-  // mxconfig.gpio = HUB75_I2S_CFG::i2s_pins{25, 26, 27, 14, 13, 12, 23, 19, 5, 18, -1, 4, 16, 17};
+  mxconfig.gpio = HUB75_DISPLAY_PINS;
   mxconfig.i2sspeed = mxconfig.HZ_20M;
   mxconfig.min_refresh_rate = 120;
   mxconfig.clkphase = false;
 
   auto display = new MatrixPanel_I2S_DMA(mxconfig);
   display->setBrightness8(255);
-  // display->setMinRefreshRate(60);
   if (!display->begin())
   {
     Serial.println("failed to allocate for display!");
@@ -100,7 +108,7 @@ void setupI2S()
 #ifdef I2S_PDM
   i2s_config_t i2s_config = {
     mode : (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
-    sample_rate : 48000,
+    sample_rate : 32000,
     bits_per_sample : I2S_BITS_PER_SAMPLE_16BIT,
     channel_format : I2S_CHANNEL_FMT_ONLY_LEFT,
     communication_format : (i2s_comm_format_t)(I2S_COMM_FORMAT_STAND_PCM_SHORT),
@@ -143,13 +151,18 @@ void setupI2S()
   HandleESPError(
       i2s_set_sample_rates(I2S_NUM, i2s_config.sample_rate),
       "failed to set i2s sample rate");
+#ifdef I2S_PDM
+  HandleESPError(
+      i2s_set_clk(I2S_NUM, i2s_config.sample_rate, i2s_config.bits_per_sample, I2S_CHANNEL_MONO),
+      "failed to set i2s clock");
+#endif
 
-  i2s_start(I2S_NUM_0);
+  i2s_start(I2S_NUM);
 }
 
 Audio_Processor_t *audioProcessor;
 #ifdef I2S_PDM
-uint16_t rawBuffer[AUDIO_INPUT_FRAME_SIZE];
+int16_t rawBuffer[AUDIO_INPUT_FRAME_SIZE];
 #else
 int rawBuffer[AUDIO_INPUT_FRAME_SIZE * 2];
 #endif
@@ -193,8 +206,8 @@ void processAudioUpdate(void *arg)
 #ifdef I2S_PDM
     for (int i = 0; i < AUDIO_INPUT_FRAME_SIZE; i++)
     {
-      // Serial.printf("L: %08x\r\n", rawBuffer[i] << 8);
-      convBuffer[i] = (float)(rawBuffer[i] << 8);
+      // Serial.printf("L: %08x\r\n", (int)rawBuffer[i] << 8);
+      convBuffer[i] = (float)(rawBuffer[i]);
     }
 #else
     for (int i = CHANNEL_NUMBER; i < 2 * AUDIO_INPUT_FRAME_SIZE; i += 2)
@@ -283,6 +296,7 @@ int targetFrameTime = 6;
 void iterate(void *arg)
 {
   Universe *universe = (Universe *)arg;
+  auto vars = Configlets::VariableGroup("render.particle-life", registry);
 
   auto types = universe->GetTypes();
   float base_attractors[NUM_TYPES][NUM_TYPES];
@@ -297,7 +311,7 @@ void iterate(void *arg)
   float audio_coef[NUM_BUCKETS][NUM_TYPES];
   construct_audio_coefficients<NUM_BUCKETS, NUM_TYPES>(audio_coef);
 
-  const float some_constant = 0.1;
+  const auto some_constant = vars.newFloatValue("audio_effect", 0.1, 0.0, 1.0, 0.05);
 
   for (;;)
   {
@@ -310,7 +324,7 @@ void iterate(void *arg)
       auto a = min(max(aval, -4.0f), 4.0f);
       for (int j = 0; j < NUM_TYPES; j++)
       {
-        types->SetAttract(i, j, base_attractors[i][j] + some_constant * a * audio_coef[i][j]);
+        types->SetAttract(i, j, base_attractors[i][j] + some_constant->value() * a * audio_coef[i][j]);
       }
     }
 
@@ -350,17 +364,11 @@ void render(void *arg)
       &reseed, FALLING);
 
   auto types = universe.GetTypes();
-  float base_attractors[NUM_TYPES][NUM_TYPES];
   for (int i = 0; i < NUM_TYPES; i++)
   {
     double r, g, b;
     hsluv2rgb(360. * (double)i / (double)NUM_TYPES, 100., 50., &r, &g, &b);
     types->SetColor(i, ColorRGB(255 * (r * r), 255 * (g * g), 255 * (b * b)));
-
-    for (int j = 0; j < NUM_TYPES; j++)
-    {
-      base_attractors[i][j] = types->Attract(i, j);
-    }
   }
 
   Serial.println("setup universe");
