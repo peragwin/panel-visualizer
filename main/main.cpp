@@ -1,14 +1,15 @@
 #include <Arduino.h>
-// #include "FreeRTOS.h"
 #include <driver/i2s.h>
 #include <WindowBuffer.h>
 #include <FrequencySensor.h>
 #include <Render.h>
 #include <color.h>
 #include <WiFi.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <AsyncJson.h>
+#ifdef USE_ASYNC_TCP
+// #include <AsyncTCP.h>
+// #include <ESPAsyncWebServer.h>
+// #include <AsyncJson.h>
+#endif
 #include <ArduinoJson.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <Universe.h>
@@ -17,8 +18,8 @@
 #include "hsluv.h"
 #include <Configlets.h>
 
-//#define VUZIC_REVA
-#define VUZIC_REVB
+#define VUZIC_REVA
+// #define VUZIC_REVB
 
 #ifdef VUZIC_REVA
 
@@ -51,10 +52,10 @@ const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32, 
 #define DISPLAY_HEIGHT 32
 #define DISPLAY_BUFFER_SIZE (DISPLAY_WIDTH * DISPLAY_HEIGHT * 3 / 4)
 
-#define NUM_BUCKETS 16
+#define NUM_BUCKETS 6 // 16
 #define NUM_FRAMES 64
 
-#define I2S_NUM I2S_NUM_0
+#define AUDIO_I2S_NUM I2S_NUM_0
 
 #define AUDIO_TASK_CORE 0
 #define RENDER_TASK_CORE 0
@@ -66,7 +67,7 @@ const char *password = WIFI_PASS;
 
 Registry registry;
 
-AsyncWebServer *server;
+// AsyncWebServer *server;
 
 MatrixPanel_I2S_DMA *display = nullptr;
 Color_RGB8 displayBuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT] = {0};
@@ -111,15 +112,19 @@ void setupI2S()
     sample_rate : 32000,
     bits_per_sample : I2S_BITS_PER_SAMPLE_16BIT,
     channel_format : I2S_CHANNEL_FMT_ONLY_LEFT,
-    communication_format : (i2s_comm_format_t)(I2S_COMM_FORMAT_STAND_PCM_SHORT),
-    intr_alloc_flags : 0,
-    dma_buf_count : 4,
-    dma_buf_len : AUDIO_INPUT_FRAME_SIZE / 2,
-    use_apll : true
+    communication_format : I2S_COMM_FORMAT_STAND_I2S,
+    intr_alloc_flags : ESP_INTR_FLAG_LEVEL1,
+    dma_buf_count : 8,
+    dma_buf_len : AUDIO_INPUT_FRAME_SIZE,
+    use_apll : false,
+    tx_desc_auto_clear : true,
   };
   i2s_pin_config_t i2s_pin_config = {
+    mck_io_num : I2S_PIN_NO_CHANGE,
+    bck_io_num : I2S_PIN_NO_CHANGE,
     ws_io_num : I2S_CLK,
-    data_in_num : I2S_DAT
+    data_out_num : I2S_PIN_NO_CHANGE,
+    data_in_num : I2S_DAT,
   };
 #else
   i2s_config_t i2s_config = {
@@ -127,37 +132,45 @@ void setupI2S()
     sample_rate : 48000,
     bits_per_sample : I2S_BITS_PER_SAMPLE_32BIT,
     channel_format : I2S_CHANNEL_FMT_RIGHT_LEFT,
-    communication_format : (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S_MSB | I2S_COMM_FORMAT_I2S),
-    intr_alloc_flags : 0,
+    communication_format : I2S_COMM_FORMAT_STAND_I2S,
+    intr_alloc_flags : ESP_INTR_FLAG_LEVEL1,
     dma_buf_count : 4,
     dma_buf_len : AUDIO_INPUT_FRAME_SIZE / 2,
-    use_apll : true
+    use_apll : false,
+    tx_desc_auto_clear : true,
+    fixed_mclk : 0,
+    mclk_multiple : I2S_MCLK_MULTIPLE_256,
   };
 
   i2s_pin_config_t i2s_pin_config = {
+    mck_io_num : I2S_PIN_NO_CHANGE,
     bck_io_num : I2S_BCK,
     ws_io_num : I2S_WS,
-    data_out_num : I2S_SO,
+    data_out_num : I2S_PIN_NO_CHANGE,
     data_in_num : I2S_SD
   };
 #endif
 
   HandleESPError(
-      i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL),
+      i2s_driver_install(AUDIO_I2S_NUM, &i2s_config, 0, NULL),
       "failed to install i2s driver");
   HandleESPError(
-      i2s_set_pin(I2S_NUM, &i2s_pin_config),
+      i2s_set_pin(AUDIO_I2S_NUM, &i2s_pin_config),
       "failed to config i2s pins");
-  HandleESPError(
-      i2s_set_sample_rates(I2S_NUM, i2s_config.sample_rate),
-      "failed to set i2s sample rate");
+  // HandleESPError(
+  //     i2s_set_sample_rates(AUDIO_I2S_NUM, i2s_config.sample_rate),
+  //     "failed to set i2s sample rate");
 #ifdef I2S_PDM
   HandleESPError(
-      i2s_set_clk(I2S_NUM, i2s_config.sample_rate, i2s_config.bits_per_sample, I2S_CHANNEL_MONO),
+      i2s_set_clk(AUDIO_I2S_NUM, i2s_config.sample_rate, i2s_config.bits_per_sample, I2S_CHANNEL_MONO),
       "failed to set i2s clock");
+#else
+  // HandleESPError(
+  //     i2s_set_clk(AUDIO_I2S_NUM, i2s_config.sample_rate, i2s_config.bits_per_sample, I2S_CHANNEL_STEREO),
+  //     "failed to set i2s clock");
 #endif
 
-  i2s_start(I2S_NUM);
+  // HandleESPError(i2s_start(AUDIO_I2S_NUM), "failed to start i2s");
 }
 
 Audio_Processor_t *audioProcessor;
@@ -180,6 +193,12 @@ void processAudioUpdate(void *arg)
   audioProcessor = NewAudioProcessor(AUDIO_BUFFER_SIZE, NUM_BUCKETS, NUM_FRAMES, NULL);
 
   setupI2S();
+  // I2SClass i2s(0, 0, I2S_SD, I2S_BCK, I2S_WS);
+  // i2s.setBufferSize(512);
+  // if (i2s.begin(I2S_LEFT_JUSTIFIED_MODE, 48000, 32))
+  // {
+  //   Serial.println("failed i2s begin");
+  // }
 
   TickType_t xlastWakeTime = xTaskGetTickCount();
 
@@ -194,10 +213,14 @@ void processAudioUpdate(void *arg)
 
     size_t bytesRead;
     HandleESPError(
-        i2s_read(I2S_NUM, rawBuffer, frame_size, &bytesRead, (size_t)(AUDIO_INPUT_FRAME_SIZE / 48)),
+        i2s_read(AUDIO_I2S_NUM, rawBuffer, frame_size, &bytesRead, 999), //(size_t)(AUDIO_INPUT_FRAME_SIZE / 48)),
         "failed to rx i2s");
+    // bytesRead = i2s.readBytes((char *)rawBuffer, frame_size);
     if (!bytesRead)
+    {
+      Serial.println("no i2s read");
       continue;
+    }
 
     vTaskDelayUntil(&xlastWakeTime, AUDIO_INPUT_FRAME_SIZE / 48);
 
@@ -353,7 +376,7 @@ void render(void *arg)
   serializeJsonPretty(doc, Serial);
 
   Universe universe(NUM_TYPES, 128, 64, 32, seed);
-  universe.ReSeed(0.0, 0.04, 0.0, 5.0, 5.0, 24.0, 0.2, false);
+  universe.ReSeed(0.0, 0.04, 0.0, 4.0, 4.0, 16.0, 0.2, false);
   universe.ToggleWrap();
 
   bool reseed = false;
@@ -397,7 +420,7 @@ void render(void *arg)
   auto color_scale = vars.newFloatValue("color_scale", 1.0, 0.0, 2.0, 0.01);
   auto lightness_scale = vars.newFloatValue("lightness_scale", 0.1, 0.0, 2.0, 0.01);
   auto lightness_offset = vars.newFloatValue("lightness_offset", 0.5, 0.0, 1.0, 0.01);
-  auto color_spread = vars.newFloatValue("color_spread", 8., 0.0, 60., 1.);
+  auto color_spread = vars.newFloatValue("color_spread", 120.0 / NUM_TYPES, 0.0, 60., 1.);
   auto fade_value = vars.newFloatValue("fade", 0.96, 0.0, 1.0, 0.01);
 
   for (;;)
@@ -909,6 +932,7 @@ void makeDebugResponse(JsonObject root, bool getRawInput)
   // serializeJson(root, Serial);
 }
 
+#ifdef USE_ASYNC_TCP
 void serve(void *arg)
 {
   while (!renderer || !audioProcessor)
@@ -1017,4 +1041,14 @@ void serve(void *arg)
   Serial.println("begin server...");
 
   server->begin();
+}
+#endif
+
+extern "C"
+{
+  void app_main(void)
+  {
+    initArduino();
+    setup();
+  }
 }

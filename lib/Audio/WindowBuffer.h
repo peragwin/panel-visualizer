@@ -14,7 +14,8 @@ public:
   void push(float *x, int size)
   {
     if (size > _size)
-      throw "cannot push size greater than capacity";
+      // throw "cannot push size greater than capacity";
+      return;
 
     bool wrap = false;
     int en = index + size;
@@ -43,7 +44,8 @@ public:
   void get(float *x, int size)
   {
     if (size > _size)
-      throw "cannot get size greater than capacity";
+      // throw "cannot get size greater than capacity";
+      return;
 
     bool wrap = false;
     int st = index - size;
