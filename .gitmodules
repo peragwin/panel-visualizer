@@ -1,3 +1,12 @@
-[submodule "lib/ParticleLife"]
-	path = lib/ParticleLife
+[submodule "components/ParticleLife"]
+	path = components/ParticleLife
 	url = git@github.com:peragwin/particle-life-embedded
+[submodule "components/arduino"]
+	path = components/arduino
+	url = https://github.com/espressif/arduino-esp32
+[submodule "components/ArduinoJson"]
+	path = components/ArduinoJson
+	url = https://github.com/bblanchon/ArduinoJson
+[submodule "components/ESP32-HUB75-MatrixPanel-I2S-DMA"]
+	path = components/ESP32-HUB75-MatrixPanel-I2S-DMA
+	url = https://github.com/mrfaptastic/ESP32-HUB75-MatrixPanel-I2S-DMA
