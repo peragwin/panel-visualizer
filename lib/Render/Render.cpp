@@ -78,7 +78,7 @@ static Color_ABGR get_hsv8(ColorParams_t *params, float amp, float phase, float 
     float val = ss * sigmoid(vs * amp + vo) + so;
     float alp = sigmoid(as * amp + ao);
 
-    uint8_t r, g, b;
+    uint8_t r = 0, g = 0, b = 0;
     if (params->clut == NULL)
     {
         // hsluv2rgb(hue, 100, 100 * (double)val, &r, &g, &b);
@@ -464,12 +464,12 @@ void Render3::renderInner(int start, int end, FS_Drivers_t *drivers)
         c2.r = ((int)c1.r * sc1 + (int)c2.r * sc2) >> 8;
 
         // if (c2.a > 1) c2.a = 1;
-        if (c2.b > 255)
-            c2.b = 255;
-        if (c2.g > 255)
-            c2.g = 255;
-        if (c2.r > 255)
-            c2.r = 255;
+        // if (c2.b > 255)
+        //     c2.b = 255;
+        // if (c2.g > 255)
+        //     c2.g = 255;
+        // if (c2.r > 255)
+        //     c2.r = 255;
 
         // TODO: put pixel in a '+' shape, but requires more blending
         buffer[bufIdx] = c2;

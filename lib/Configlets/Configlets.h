@@ -18,12 +18,12 @@ namespace Configlets
     public:
         Configlet(const char *name, const char *group = nullptr)
         {
-            strncpy(_name, name, sizeof(_name));
+            strncpy(_name, name, sizeof(_name) - 1);
             if (!group)
             {
                 group = "default";
             }
-            strncpy(_group, group, sizeof(_group));
+            strncpy(_group, group, sizeof(_group) - 1);
         }
 
         virtual const char *dataType() = 0;
