@@ -18,20 +18,21 @@
 #include "hsluv.h"
 #include <Configlets.h>
 
-#define VUZIC_REVA
+// #define VUZIC_REVA
 // #define VUZIC_REVB
+#define VUZIC32_REVA
 
 #ifdef VUZIC_REVA
 
-#define I2S_BCK 21
-#define I2S_WS 22
+#define I2S_BCK 14 // 21
+#define I2S_WS 15  // 22
 #define I2S_SD 4
-#define I2S_SO 23
+// #define I2S_SO 23
 
 #define BUTTON_PIN 39
 
 // int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
-const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
+// const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
 
 #endif
 
@@ -45,6 +46,27 @@ const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {25, 26, 27, 14, 12, 13, 32, 
 
 // int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
 const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32, 33, 5, 13, -1, 26, 27, 25};
+
+#endif
+
+#ifdef VUZIC32_REVA
+
+#define I2S_PDM
+#define I2S_CLK 12
+#define I2S_DAT 14
+#define A_BUTTON 36
+#define B_BUTTON 0
+#define J_BUTTON 39
+#define IMU_INT1 34
+#define IMU_INT2 35
+#define I2S_SCL 23
+#define I2S_SDA 22
+#define POW_KEY 32
+#define LED_OUT 33
+#define BUTTON_PIN B_BUTTON
+
+// int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
+const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {16, 17, 5, 19, 18, 21, 2, 4, 15, 13, -1, 26, 27, 25};
 
 #endif
 
@@ -69,7 +91,7 @@ Registry registry;
 
 // AsyncWebServer *server;
 
-MatrixPanel_I2S_DMA *display = nullptr;
+// MatrixPanel_I2S_DMA *display = nullptr;
 Color_RGB8 displayBuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT] = {0};
 
 MatrixPanel_I2S_DMA *setupDisplay()
@@ -193,12 +215,6 @@ void processAudioUpdate(void *arg)
   audioProcessor = NewAudioProcessor(AUDIO_BUFFER_SIZE, NUM_BUCKETS, NUM_FRAMES, NULL);
 
   setupI2S();
-  // I2SClass i2s(0, 0, I2S_SD, I2S_BCK, I2S_WS);
-  // i2s.setBufferSize(512);
-  // if (i2s.begin(I2S_LEFT_JUSTIFIED_MODE, 48000, 32))
-  // {
-  //   Serial.println("failed i2s begin");
-  // }
 
   TickType_t xlastWakeTime = xTaskGetTickCount();
 
@@ -215,7 +231,6 @@ void processAudioUpdate(void *arg)
     HandleESPError(
         i2s_read(AUDIO_I2S_NUM, rawBuffer, frame_size, &bytesRead, 999), //(size_t)(AUDIO_INPUT_FRAME_SIZE / 48)),
         "failed to rx i2s");
-    // bytesRead = i2s.readBytes((char *)rawBuffer, frame_size);
     if (!bytesRead)
     {
       Serial.println("no i2s read");
@@ -230,8 +245,9 @@ void processAudioUpdate(void *arg)
     for (int i = 0; i < AUDIO_INPUT_FRAME_SIZE; i++)
     {
       // Serial.printf("L: %08x\r\n", (int)rawBuffer[i] << 8);
-      convBuffer[i] = (float)(rawBuffer[i]);
+      convBuffer[i] = (float)(rawBuffer[i]) * 256.0;
     }
+    // Serial.printf("%0.8f\r\n", convBuffer[0]);
 #else
     for (int i = CHANNEL_NUMBER; i < 2 * AUDIO_INPUT_FRAME_SIZE; i += 2)
     {
@@ -399,7 +415,7 @@ void render(void *arg)
   auto display = setupDisplay();
   Serial.println("setup display");
 
-  auto drawParticle = [display](Particle &p, ColorRGB c)
+  auto drawParticle = [](Particle &p, ColorRGB c)
   {
     auto idx = (uint16_t)p.x + (uint16_t)p.y * DISPLAY_WIDTH;
     displayBuffer[idx].r = c.r;
@@ -490,7 +506,7 @@ void render(void *arg)
     vPortYield();
   }
 }
-
+/*
 void render_old(void *arg)
 {
   Serial.println("start render");
@@ -583,7 +599,7 @@ void render_old(void *arg)
     // vTaskDelayUntil(&lastTime, 2); // targetFrameTime);
   }
 }
-
+*/
 void loop()
 {
   delay(100);
