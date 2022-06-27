@@ -39,11 +39,29 @@ namespace Configlets
         const char *name() const { return _name; }
         const char *group() const { return _group; }
 
+        bool readOnly = false;
+
     private:
         char _name[CONFIGLET_NAME_SIZE];
         char _group[CONFIGLET_NAME_SIZE];
 
         virtual void toJsonInner(JsonObject &json) = 0;
+    };
+
+    template <typename DataType>
+    class CustomValue : public Configlet
+    {
+    public:
+        CustomValue(const char *name, const char *group, shared_ptr<DataType> data)
+            : Configlet(name, group), _data(data) {}
+        const char *dataType() { return dtype(); }
+        static const char *dtype() { return DataType::dtype(); }
+        shared_ptr<DataType> value() { return _data; }
+
+    private:
+        shared_ptr<DataType> _data;
+
+        void toJsonInner(JsonObject &json) { _data->toJson(json); }
     };
 
     class IntValue : public Configlet
@@ -70,7 +88,7 @@ namespace Configlets
     class FloatValue : public Configlet
     {
     private:
-        float _value = 0;
+        shared_ptr<float> _pvalue;
         float _max_value = 999.;
         float _min_value = -999;
         float _step = 1.0;
@@ -78,11 +96,13 @@ namespace Configlets
         void toJsonInner(JsonObject &json);
 
     public:
-        FloatValue(const char *name, const char *group = nullptr) : Configlet(name, group) {}
+        FloatValue(const char *name, const char *group, shared_ptr<float> pvalue)
+            : Configlet(name, group), _pvalue(pvalue) {}
+
         const char *dataType() { return dtype(); }
         static const char *dtype() { return "Float"; }
 
-        float &value() { return _value; }
+        float &value() { return *_pvalue; }
         float &max_value() { return _max_value; }
         float &min_value() { return _min_value; }
         float &step() { return _step; }
@@ -127,7 +147,7 @@ namespace Configlets
         }
         shared_ptr<FloatValue> newFloatValue(const char *name, const char *group = nullptr)
         {
-            return newValue<FloatValue>(name, group);
+            return newValue<FloatValue>(name, group, make_shared<float>(0.0));
         }
         shared_ptr<BoolValue> newBoolValue(const char *name, const char *group = nullptr)
         {
@@ -138,8 +158,8 @@ namespace Configlets
             return newValue<StringValue>(name, group);
         }
 
-        template <typename DataType>
-        shared_ptr<DataType> newValue(const char *name, const char *group = nullptr)
+        template <typename DataType, class... Args>
+        shared_ptr<DataType> newValue(const char *name, const char *group, Args... _args)
         {
             static_assert(is_base_of<Configlet, DataType>::value, "DataType must derive Configlet");
 
@@ -155,7 +175,7 @@ namespace Configlets
                 }
             }
 
-            auto value = make_shared<DataType>(name, group);
+            auto value = make_shared<DataType>(name, group, _args...);
             insert(value);
 
             // xSemaphoreGive(xlock);
@@ -191,10 +211,9 @@ namespace Configlets
             v->step() = step;
             return v;
         }
-        shared_ptr<FloatValue> newFloatValue(const char *name, float value = 0.0, float min_value = -999., float max_value = 999, float step = 1.)
+        shared_ptr<FloatValue> newFloatValue(const char *name, shared_ptr<float> pvalue, float min_value = -999., float max_value = 999, float step = 1.)
         {
-            auto v = reg.newValue<FloatValue>(name, group);
-            v->value() = value;
+            auto v = reg.newValue<FloatValue>(name, group, pvalue);
             v->min_value() = min_value;
             v->max_value() = max_value;
             v->step() = step;
@@ -214,9 +233,9 @@ namespace Configlets
         }
 
         template <typename DataType>
-        shared_ptr<DataType> newValue(const char *name)
+        shared_ptr<CustomValue<DataType>> newCustomValue(const char *name, shared_ptr<DataType> pvalue)
         {
-            return reg.newValue<DataType>(name, group);
+            return reg.newValue<CustomValue<DataType>>(name, group, pvalue);
         }
     };
 };

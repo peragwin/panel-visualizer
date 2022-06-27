@@ -1,22 +1,28 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <driver/i2s.h>
-#include <WindowBuffer.h>
-#include <FrequencySensor.h>
-#include <Render.h>
-#include <color.h>
+
+#ifdef USE_RADIO
+#include <BLEDevice.h>
 #include <WiFi.h>
+#endif
+
 #ifdef USE_ASYNC_TCP
 // #include <AsyncTCP.h>
 // #include <ESPAsyncWebServer.h>
 // #include <AsyncJson.h>
 #endif
-#include <ArduinoJson.h>
-#include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
-#include <Universe.h>
-#include <audio_coef.h>
-#include <BLEDevice.h>
+
+#include "analyzer.h"
+#include "audio_coef.h"
 #include "hsluv.h"
 #include <Configlets.h>
+#include <Render.h>
+#include <Universe.h>
+#include <color.h>
+
+using namespace vuzicaudio;
 
 // #define VUZIC_REVA
 // #define VUZIC_REVB
@@ -32,7 +38,8 @@
 #define BUTTON_PIN 39
 
 // int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
-// const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {25, 26, 27, 14, 12, 13, 32, 33, 5, 2, -1, 17, 15, 16};
+// const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {25, 26, 27, 14, 12, 13,
+// 32, 33, 5, 2, -1, 17, 15, 16};
 
 #endif
 
@@ -45,7 +52,8 @@
 #define BUTTON_PIN 35
 
 // int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
-const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32, 33, 5, 13, -1, 26, 27, 25};
+const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32,
+                                                    33, 5,  13, -1, 26, 27, 25};
 
 #endif
 
@@ -66,7 +74,8 @@ const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32, 
 #define BUTTON_PIN B_BUTTON
 
 // int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
-const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {16, 17, 5, 19, 18, 21, 2, 4, 15, 13, -1, 26, 27, 25};
+const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {16, 17, 5,  19, 18, 21, 2,
+                                                    4,  15, 13, -1, 26, 27, 25};
 
 #endif
 
@@ -91,11 +100,9 @@ Registry registry;
 
 // AsyncWebServer *server;
 
-// MatrixPanel_I2S_DMA *display = nullptr;
-Color_RGB8 displayBuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT] = {0};
+ColorRGB8 displayBuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT] = {ColorRGB8(0, 0, 0)};
 
-MatrixPanel_I2S_DMA *setupDisplay()
-{
+MatrixPanel_I2S_DMA *setupDisplay() {
   HUB75_I2S_CFG mxconfig(DISPLAY_WIDTH, DISPLAY_HEIGHT);
   mxconfig.driver = HUB75_I2S_CFG::FM6126A;
   mxconfig.gpio = HUB75_DISPLAY_PINS;
@@ -105,17 +112,14 @@ MatrixPanel_I2S_DMA *setupDisplay()
 
   auto display = new MatrixPanel_I2S_DMA(mxconfig);
   display->setBrightness8(255);
-  if (!display->begin())
-  {
+  if (!display->begin()) {
     Serial.println("failed to allocate for display!");
   }
   return display;
 }
 
-void HandleESPError(esp_err_t err, String msg)
-{
-  if (err != ESP_OK)
-  {
+void HandleESPError(esp_err_t err, String msg) {
+  if (err != ESP_OK) {
     Serial.println("ESP ERROR!");
     Serial.println(err);
     Serial.println(msg);
@@ -126,8 +130,7 @@ void HandleESPError(esp_err_t err, String msg)
 #define AUDIO_BUFFER_SIZE 512
 #define CHANNEL_NUMBER 0
 
-void setupI2S()
-{
+void setupI2S() {
 #ifdef I2S_PDM
   i2s_config_t i2s_config = {
     mode : (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
@@ -173,29 +176,27 @@ void setupI2S()
   };
 #endif
 
-  HandleESPError(
-      i2s_driver_install(AUDIO_I2S_NUM, &i2s_config, 0, NULL),
-      "failed to install i2s driver");
-  HandleESPError(
-      i2s_set_pin(AUDIO_I2S_NUM, &i2s_pin_config),
-      "failed to config i2s pins");
+  HandleESPError(i2s_driver_install(AUDIO_I2S_NUM, &i2s_config, 0, NULL),
+                 "failed to install i2s driver");
+  HandleESPError(i2s_set_pin(AUDIO_I2S_NUM, &i2s_pin_config),
+                 "failed to config i2s pins");
   // HandleESPError(
   //     i2s_set_sample_rates(AUDIO_I2S_NUM, i2s_config.sample_rate),
   //     "failed to set i2s sample rate");
 #ifdef I2S_PDM
-  HandleESPError(
-      i2s_set_clk(AUDIO_I2S_NUM, i2s_config.sample_rate, i2s_config.bits_per_sample, I2S_CHANNEL_MONO),
-      "failed to set i2s clock");
+  HandleESPError(i2s_set_clk(AUDIO_I2S_NUM, i2s_config.sample_rate,
+                             i2s_config.bits_per_sample, I2S_CHANNEL_MONO),
+                 "failed to set i2s clock");
 #else
   // HandleESPError(
-  //     i2s_set_clk(AUDIO_I2S_NUM, i2s_config.sample_rate, i2s_config.bits_per_sample, I2S_CHANNEL_STEREO),
-  //     "failed to set i2s clock");
+  //     i2s_set_clk(AUDIO_I2S_NUM, i2s_config.sample_rate,
+  //     i2s_config.bits_per_sample, I2S_CHANNEL_STEREO), "failed to set i2s
+  //     clock");
 #endif
 
   // HandleESPError(i2s_start(AUDIO_I2S_NUM), "failed to start i2s");
 }
 
-Audio_Processor_t *audioProcessor;
 #ifdef I2S_PDM
 int16_t rawBuffer[AUDIO_INPUT_FRAME_SIZE];
 #else
@@ -203,23 +204,27 @@ int rawBuffer[AUDIO_INPUT_FRAME_SIZE * 2];
 #endif
 long processTime = 0;
 
+Analyzer *analyzer;
+
 TaskHandle_t audioUpdateTask;
-void processAudioUpdate(void *arg)
-{
+void processAudioUpdate(void *arg) {
 
-  WindowBuffer<AUDIO_BUFFER_SIZE> audioBuffer;
+  analyzer =
+      new Analyzer(AUDIO_BUFFER_SIZE, AUDIO_BUFFER_SIZE, NUM_BUCKETS, registry);
 
-  float convBuffer[AUDIO_INPUT_FRAME_SIZE];
-  float frame[AUDIO_BUFFER_SIZE];
+  // WindowBuffer<AUDIO_BUFFER_SIZE> audioBuffer;
 
-  audioProcessor = NewAudioProcessor(AUDIO_BUFFER_SIZE, NUM_BUCKETS, NUM_FRAMES, NULL);
+  vector<float> convBuffer(AUDIO_INPUT_FRAME_SIZE);
+  // float frame[AUDIO_BUFFER_SIZE];
+
+  // audioProcessor = NewAudioProcessor(AUDIO_BUFFER_SIZE, NUM_BUCKETS,
+  // NUM_FRAMES, NULL);
 
   setupI2S();
 
   TickType_t xlastWakeTime = xTaskGetTickCount();
 
-  for (;;)
-  {
+  for (;;) {
 
 #ifdef I2S_PDM
     size_t frame_size = 2 * AUDIO_INPUT_FRAME_SIZE;
@@ -228,11 +233,10 @@ void processAudioUpdate(void *arg)
 #endif
 
     size_t bytesRead;
-    HandleESPError(
-        i2s_read(AUDIO_I2S_NUM, rawBuffer, frame_size, &bytesRead, 999), //(size_t)(AUDIO_INPUT_FRAME_SIZE / 48)),
-        "failed to rx i2s");
-    if (!bytesRead)
-    {
+    HandleESPError(i2s_read(AUDIO_I2S_NUM, rawBuffer, frame_size, &bytesRead,
+                            999), //(size_t)(AUDIO_INPUT_FRAME_SIZE / 48)),
+                   "failed to rx i2s");
+    if (!bytesRead) {
       Serial.println("no i2s read");
       continue;
     }
@@ -242,24 +246,24 @@ void processAudioUpdate(void *arg)
     long now = micros();
 
 #ifdef I2S_PDM
-    for (int i = 0; i < AUDIO_INPUT_FRAME_SIZE; i++)
-    {
+    for (int i = 0; i < AUDIO_INPUT_FRAME_SIZE; i++) {
       // Serial.printf("L: %08x\r\n", (int)rawBuffer[i] << 8);
       convBuffer[i] = (float)(rawBuffer[i]) * 256.0;
     }
     // Serial.printf("%0.8f\r\n", convBuffer[0]);
 #else
-    for (int i = CHANNEL_NUMBER; i < 2 * AUDIO_INPUT_FRAME_SIZE; i += 2)
-    {
+    for (int i = CHANNEL_NUMBER; i < 2 * AUDIO_INPUT_FRAME_SIZE; i += 2) {
       // Serial.printf("L: %d R: %d\r\n", rawBuffer[i], rawBuffer[i + 1]);
       convBuffer[i / 2] = (float)((rawBuffer[i] + rawBuffer[i + 1]) >> 8);
     }
 #endif
 
-    audioBuffer.push(convBuffer, AUDIO_INPUT_FRAME_SIZE);
-    audioBuffer.get(frame, AUDIO_BUFFER_SIZE);
+    // audioBuffer.push(convBuffer, AUDIO_INPUT_FRAME_SIZE);
+    // audioBuffer.get(frame, AUDIO_BUFFER_SIZE);
 
-    Audio_Process(audioProcessor, frame);
+    // Audio_Process(audioProcessor, frame);
+
+    analyzer->process(convBuffer);
 
     processTime = micros() - now;
   }
@@ -280,44 +284,32 @@ void serve(void *arg);
 
 auto render_fps = registry.newFloatValue("fps", "status");
 
-void setup()
-{
+void setup() {
   Serial.begin(115200);
   pinMode(BUTTON_PIN, INPUT);
 
-  xTaskCreatePinnedToCore(
-      render,
-      "render",
-      8192,
-      NULL,
-      6,
-      &render_task,
-      RENDER_TASK_CORE);
+  xTaskCreatePinnedToCore(render, "render", 8192, NULL, 6, &render_task,
+                          RENDER_TASK_CORE);
+
+  xTaskCreatePinnedToCore(processAudioUpdate, "audioUpdate", 8192 * 3, NULL, 4,
+                          &audioUpdateTask, AUDIO_TASK_CORE);
 
   xTaskCreatePinnedToCore(
-      processAudioUpdate,
-      "audioUpdate",
-      8192 * 3,
-      NULL,
-      4,
-      &audioUpdateTask,
-      AUDIO_TASK_CORE);
+      [](void *arg) {
+        for (;;) {
+#ifdef USE_RADIO
+          auto mode = WiFi.getMode();
+          if (mode != WIFI_MODE_NULL) {
+            Serial.println(WiFi.localIP());
+            WiFi.printDiag(Serial);
+          }
+#endif
+          Serial.printf("FPS: %0.2f\r\n", render_fps->value());
 
-  xTaskCreatePinnedToCore([](void *arg)
-                          {
-    for (;;)
-    {
-      auto mode = WiFi.getMode();
-      if (mode != WIFI_MODE_NULL)
-      {
-        Serial.println(WiFi.localIP());
-        WiFi.printDiag(Serial);
-      }
-      Serial.printf("FPS: %0.2f\r\n", render_fps->value());
-
-      vTaskDelay(pdMS_TO_TICKS(8000));
-    } },
-                          "info_task", 8192, NULL, 8, NULL, RENDER_TASK_CORE);
+          vTaskDelay(pdMS_TO_TICKS(8000));
+        }
+      },
+      "info_task", 8192, NULL, 8, NULL, RENDER_TASK_CORE);
 
   // BLEDevice::init("vuzic-esp32");
 
@@ -332,17 +324,14 @@ int targetFrameTime = 6;
 
 #define NUM_TYPES NUM_BUCKETS
 
-void iterate(void *arg)
-{
+void iterate(void *arg) {
   Universe *universe = (Universe *)arg;
   auto vars = Configlets::VariableGroup("render.particle-life", registry);
 
   auto types = universe->GetTypes();
   float base_attractors[NUM_TYPES][NUM_TYPES];
-  for (int i = 0; i < NUM_TYPES; i++)
-  {
-    for (int j = 0; j < NUM_TYPES; j++)
-    {
+  for (int i = 0; i < NUM_TYPES; i++) {
+    for (int j = 0; j < NUM_TYPES; j++) {
       base_attractors[i][j] = types->Attract(i, j);
     }
   }
@@ -350,20 +339,36 @@ void iterate(void *arg)
   float audio_coef[NUM_BUCKETS][NUM_TYPES];
   construct_audio_coefficients<NUM_BUCKETS, NUM_TYPES>(audio_coef);
 
-  const auto some_constant = vars.newFloatValue("audio_effect", 0.1, 0.0, 1.0, 0.05);
+  auto audio_effect = make_shared<float>(1.0);
+  vars.newFloatValue("audio_effect", audio_effect, 0.0, 10.0, 0.05);
 
-  for (;;)
-  {
-    auto idx = audioProcessor->fs->columnIdx;
-    auto audio = audioProcessor->fs->drivers->amp[idx];
-    auto scale = audioProcessor->fs->drivers->scales;
-    for (int i = 0; i < NUM_BUCKETS; i++)
-    {
-      auto aval = scale[i] * (audio[i] - 1.0f);
+  bool reseed = false;
+  size_t last_reseed = millis();
+  attachInterruptArg(
+      BUTTON_PIN, [](void *arg) { *(bool *)arg = !digitalRead(BUTTON_PIN); },
+      &reseed, FALLING);
+
+  for (;;) {
+    if (reseed) {
+      reseed = false;
+      auto now = millis();
+      if (now - last_reseed > 200) {
+        last_reseed = now;
+        randomSeed(esp_random());
+        universe->ReSeed(0.0, 0.04, 0.0, 5.0, 5.0, 24.0, 0.2, false);
+      }
+    }
+
+    auto &audio = analyzer->getOutput().value;
+    auto some_constant = *audio_effect;
+    // auto scale = audioProcessor->fs->drivers->scales;
+    for (int i = 0; i < NUM_BUCKETS; i++) {
+      // auto aval = scale[i] * (audio[i] - 1.0f);
+      auto aval = audio[i];
       auto a = min(max(aval, -4.0f), 4.0f);
-      for (int j = 0; j < NUM_TYPES; j++)
-      {
-        types->SetAttract(i, j, base_attractors[i][j] + some_constant->value() * a * audio_coef[i][j]);
+      for (int j = 0; j < NUM_TYPES; j++) {
+        types->SetAttract(
+            i, j, base_attractors[i][j] + some_constant * a * audio_coef[i][j]);
       }
     }
 
@@ -374,9 +379,8 @@ void iterate(void *arg)
   }
 }
 
-void render(void *arg)
-{
-  auto vars = Configlets::VariableGroup("render.particle-life", registry);
+void render(void *arg) {
+  auto vars = Configlets::VariableGroup("render.particle_life", registry);
 
   Serial.println("particle life render");
   auto seed = esp_random();
@@ -386,28 +390,15 @@ void render(void *arg)
     s->value() = seed;
   }
 
-  DynamicJsonDocument doc(2048);
-  JsonObject js = doc.to<JsonObject>();
-  registry.dumpJson(js);
-  serializeJsonPretty(doc, Serial);
-
   Universe universe(NUM_TYPES, 128, 64, 32, seed);
   universe.ReSeed(0.0, 0.04, 0.0, 4.0, 4.0, 16.0, 0.2, false);
   universe.ToggleWrap();
 
-  bool reseed = false;
-  size_t last_reseed = millis();
-  attachInterruptArg(
-      BUTTON_PIN, [](void *arg)
-      { *(bool *)arg = !digitalRead(BUTTON_PIN); },
-      &reseed, FALLING);
-
   auto types = universe.GetTypes();
-  for (int i = 0; i < NUM_TYPES; i++)
-  {
+  for (int i = 0; i < NUM_TYPES; i++) {
     double r, g, b;
     hsluv2rgb(360. * (double)i / (double)NUM_TYPES, 100., 50., &r, &g, &b);
-    types->SetColor(i, ColorRGB(255 * (r * r), 255 * (g * g), 255 * (b * b)));
+    types->SetColor(i, ColorRGB(255 * r, 255 * g, 255 * b));
   }
 
   Serial.println("setup universe");
@@ -415,64 +406,52 @@ void render(void *arg)
   auto display = setupDisplay();
   Serial.println("setup display");
 
-  auto drawParticle = [](Particle &p, ColorRGB c)
-  {
-    auto idx = (uint16_t)p.x + (uint16_t)p.y * DISPLAY_WIDTH;
-    displayBuffer[idx].r = c.r;
-    displayBuffer[idx].g = c.g;
-    displayBuffer[idx].b = c.b;
-  };
-
   int frameCount = 0;
   TickType_t fpsTime = xTaskGetTickCount();
 
-  while (!audioProcessor)
-  {
+  while (!analyzer) {
     vTaskDelay(10);
   }
 
-  xTaskCreatePinnedToCore(iterate, "iterate_task", 4096, (void *)&universe, 5, NULL, ITERATE_TASK_CORE);
+  DynamicJsonDocument doc(2048);
+  JsonObject js = doc.to<JsonObject>();
+  registry.dumpJson(js);
+  serializeJsonPretty(doc, Serial);
 
-  auto color_scale = vars.newFloatValue("color_scale", 1.0, 0.0, 2.0, 0.01);
-  auto lightness_scale = vars.newFloatValue("lightness_scale", 0.1, 0.0, 2.0, 0.01);
-  auto lightness_offset = vars.newFloatValue("lightness_offset", 0.5, 0.0, 1.0, 0.01);
-  auto color_spread = vars.newFloatValue("color_spread", 120.0 / NUM_TYPES, 0.0, 60., 1.);
-  auto fade_value = vars.newFloatValue("fade", 0.96, 0.0, 1.0, 0.01);
+  xTaskCreatePinnedToCore(iterate, "iterate_task", 4096, (void *)&universe, 5,
+                          NULL, ITERATE_TASK_CORE);
 
-  for (;;)
-  {
-    if (reseed)
-    {
-      reseed = false;
-      auto now = millis();
-      if (now - last_reseed > 200)
-      {
-        last_reseed = now;
-        randomSeed(esp_random());
-        universe.ReSeed(0.0, 0.04, 0.0, 5.0, 5.0, 24.0, 0.2, false);
-      }
-    }
+  auto color_scale = make_shared<float>(1.0);
+  vars.newFloatValue("color_scale", color_scale, 0.0, 2.0, 0.01);
+  auto lightness_scale = make_shared<float>(0.1);
+  vars.newFloatValue("lightness_scale", lightness_scale, 0.0, 2.0, 0.01);
+  auto lightness_offset = make_shared<float>(0.5);
+  vars.newFloatValue("lightness_offset", lightness_offset, 0.0, 1.0, 0.01);
+  auto color_spread = make_shared<float>(120.0 / NUM_TYPES);
+  vars.newFloatValue("color_spread", color_spread, 0.0, 60., 1.);
+  auto fade_value = make_shared<float>(0.96);
+  vars.newFloatValue("fade", fade_value, 0.0, 1.0, 0.01);
 
+  for (;;) {
     // fade display
-    uint16_t fade = 256 * fade_value->value();
-    for (auto &c : displayBuffer)
-    {
+    uint16_t fade = 256 * *fade_value;
+    for (auto &c : displayBuffer) {
       c.r = ((uint16_t)c.r * fade) >> 8;
       c.g = ((uint16_t)c.g * fade) >> 8;
       c.b = ((uint16_t)c.b * fade) >> 8;
     }
 
-    auto idx = audioProcessor->fs->columnIdx;
-    auto audio = audioProcessor->fs->drivers->amp[idx];
-    auto scale = audioProcessor->fs->drivers->scales;
-    auto energy = audioProcessor->fs->drivers->energy;
-    auto ls = lightness_scale->value();
-    auto lo = lightness_offset->value();
-    auto csp = color_spread->value();
-    auto csc = color_scale->value();
-    for (int i = 0; i < NUM_BUCKETS; i++)
-    {
-      auto aval = scale[i] * (audio[i] - 1.0f);
+    xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
+
+    auto &audio = analyzer->getOutput().value;
+    auto &energy = analyzer->getOutput().energy;
+    auto ls = *lightness_scale;
+    auto lo = *lightness_offset;
+    auto csp = *color_spread;
+    auto csc = *color_scale;
+    for (int i = 0; i < NUM_BUCKETS; i++) {
+      // auto aval = scale[i] * (audio[i] - 1.0f);
+      auto aval = audio[i];
       auto cval = ls * sigmoid(aval) + lo;
 
       double r, g, b;
@@ -480,24 +459,64 @@ void render(void *arg)
       if (hue < 0)
         hue += 360;
       hsluv2rgb(hue, 100., 100. * cval, &r, &g, &b);
-      types->SetColor(i, ColorRGB(255 * r * r, 255 * g * g, 255 * b * b));
+      types->SetColor(i, ColorRGB(255 * r, 255 * g, 255 * b));
     }
 
-    xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
-    universe.IterParticles(drawParticle);
+    universe.IterParticles([](Particle &p, ColorRGB c) {
+      static float kernel[3][3] = {
+          // {0.0, 0.1, 0.0}, {0.1, 0.9, 0.1}, {0.0, 0.1, 0.0}};
+          {0.0, 0.0, 0.0},
+          {0.0, 1.0, 0.0},
+          {0.0, 0.0, 0.0}};
+      // float bilinear_sample_kernel(float x, float y, float sx, float sy) {
+      //   int px = int(x);
+      //   int py = int(y);
+      //   float dx = x - floor(x+sx);
+      //   float dy = y - floor(y+sy);
+      //   int qx = int(dx);
+      //   int qy = int(dy);
+      //   int i = 1 + (px - qx);
+      //   int j = 1 + (py - qy);
 
-    for (int16_t j = 0; j < DISPLAY_HEIGHT; j++)
-    {
-      for (int16_t i = 0; i < DISPLAY_WIDTH; i++)
-      {
+      // }
+
+      //   auto x = p.x;
+      //   auto y = p.y;
+      //   auto x_i = int(x);
+      //   auto y_i = int(y);
+
+      //   auto is = x > 0 ? -1 : 0;
+      //   auto ie = x < DISPLAY_WIDTH - 1 ? 1 : 0;
+      //   auto js = y > 0 ? -1 : 0;
+      //   auto je = y < DISPLAY_HEIGHT - 1 ? 1 : 0;
+
+      //   for (int j = js; j < je; j++) {
+      //     for (int i = is; i < ie; i++) {
+      //       auto k = kernel[j][i];
+      //       float xf = x + float(i);
+      //       float yf = y + float(j);
+
+      //       auto idx = (x_i + i) + (y_i + j) * DISPLAY_WIDTH;
+      //       auto c1 = displayBuffer[idx];
+      //       auto c2 = ColorRGB8(c.r, c.g, c.b);
+      //       displayBuffer[idx] = c2.blend(c1, k);
+      //     }
+      //   }
+      auto x_i = int(p.x);
+      auto y_i = int(p.y);
+      auto idx = (x_i) + (y_i)*DISPLAY_WIDTH;
+      displayBuffer[idx] = ColorRGB8(c.r, c.g, c.b);
+    });
+
+    for (int16_t j = 0; j < DISPLAY_HEIGHT; j++) {
+      for (int16_t i = 0; i < DISPLAY_WIDTH; i++) {
         auto &c = displayBuffer[i + j * DISPLAY_WIDTH];
         display->drawPixelRGB888(i, j, c.r, c.g, c.b);
       }
     }
 
     TickType_t lastTime = xTaskGetTickCount();
-    if (frameCount++ % 32 == 0)
-    {
+    if (frameCount++ % 32 == 0) {
       auto e = 1000.0 / ((float)(lastTime - fpsTime) + 0.001);
       fpsTime = lastTime;
       render_fps->value() = .9 * render_fps->value() + .1 * 32.0 * e;
@@ -600,11 +619,8 @@ void render_old(void *arg)
   }
 }
 */
-void loop()
-{
-  delay(100);
-}
-
+void loop() { delay(100); }
+/*
 void makeJsonResponse(JsonObject root)
 {
   root["targetFrameRate"] = 1000 / targetFrameTime;
@@ -831,7 +847,8 @@ void setParamsFromJson(JsonObject root)
       {
         for (int i = 0; i < 2; i++)
         {
-          audioProcessor->fs->gc->filter->params[i] = gcFilterParams.getElement(i);
+          audioProcessor->fs->gc->filter->params[i] =
+gcFilterParams.getElement(i);
         }
       }
     }
@@ -908,8 +925,8 @@ void makeDebugResponse(JsonObject root, bool getRawInput)
   perf["renderFps"] = renderer->fps;
   perf["displayFps"] = render_fps->value();
   perf["renderInitTime"] = renderer->initTime;
-  perf["renderColorTime"] = renderer->colorTime * renderer->getRows() * renderer->getColumns();
-  perf["renderDrawTime"] = renderer->drawTime;
+  perf["renderColorTime"] = renderer->colorTime * renderer->getRows() *
+renderer->getColumns(); perf["renderDrawTime"] = renderer->drawTime;
   perf["renderWriteTime"] = renderer->writeTime;
   perf["queueLeftTime"] = renderer->queueLeftTime;
   perf["queueRightTime"] = renderer->queueRightTime;
@@ -947,10 +964,9 @@ void makeDebugResponse(JsonObject root, bool getRawInput)
 
   // serializeJson(root, Serial);
 }
-
+*/
 #ifdef USE_ASYNC_TCP
-void serve(void *arg)
-{
+void serve(void *arg) {
   while (!renderer || !audioProcessor)
     vTaskDelay(10);
 
@@ -984,38 +1000,39 @@ void serve(void *arg)
   // AsyncServer server(80);
   // AsyncWebServer server(addr, 80);
 
-  server->on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-             {
-              Serial.println("got request to /");
+  server->on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("got request to /");
 
-              AsyncJsonResponse *response = new AsyncJsonResponse();
-              response->addHeader("Server", "LED Panel Server");
-              JsonObject root = response->getRoot();
-              makeJsonResponse(root);
-              response->setLength();
+    AsyncJsonResponse *response = new AsyncJsonResponse();
+    response->addHeader("Server", "LED Panel Server");
+    JsonObject root = response->getRoot();
+    makeJsonResponse(root);
+    response->setLength();
 
-              request->send(response); });
+    request->send(response);
+  });
 
-  AsyncCallbackJsonWebHandler *handler = new AsyncCallbackJsonWebHandler("/",
-                                                                         [](AsyncWebServerRequest *request, JsonVariant json)
-                                                                         {
-                                                                           JsonObject obj = json.as<JsonObject>();
+  AsyncCallbackJsonWebHandler *handler = new AsyncCallbackJsonWebHandler(
+      "/", [](AsyncWebServerRequest *request, JsonVariant json) {
+        JsonObject obj = json.as<JsonObject>();
 
-                                                                           setParamsFromJson(obj);
+        setParamsFromJson(obj);
 
-                                                                           AsyncJsonResponse *response = new AsyncJsonResponse();
-                                                                           response->addHeader("Server", "LED Panel Server");
-                                                                           JsonObject root = response->getRoot();
-                                                                           makeJsonResponse(root);
-                                                                           response->setLength();
+        AsyncJsonResponse *response = new AsyncJsonResponse();
+        response->addHeader("Server", "LED Panel Server");
+        JsonObject root = response->getRoot();
+        makeJsonResponse(root);
+        response->setLength();
 
-                                                                           request->send(response);
-                                                                         });
+        request->send(response);
+      });
   server->addHandler(handler);
 
   // server.on("/", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
-  //   [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-  //     if (len > 1024) request->send(400, "text/plain", "request body too large");
+  //   [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t
+  //   index, size_t total){
+  //     if (len > 1024) request->send(400, "text/plain", "request body too
+  //     large");
 
   //     DynamicJsonDocument doc(1024);
   //     DeserializationError error = deserializeJson(doc, data, len);
@@ -1026,33 +1043,33 @@ void serve(void *arg)
 
   // });
 
-  server->on("/debug", HTTP_GET, [](AsyncWebServerRequest *request)
-             {
-              Serial.println("got /debug");
+  server->on("/debug", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("got /debug");
 
-              AsyncJsonResponse *response = new AsyncJsonResponse(false, 8196);
-              response->addHeader("Server", "LED Panel Server");
-              JsonObject root = response->getRoot();
+    AsyncJsonResponse *response = new AsyncJsonResponse(false, 8196);
+    response->addHeader("Server", "LED Panel Server");
+    JsonObject root = response->getRoot();
 
-              // bool getRawInput = request->getParam("rawInput");
-              makeDebugResponse(root, false);
+    // bool getRawInput = request->getParam("rawInput");
+    makeDebugResponse(root, false);
 
-              response->setLength();
-              request->send(response); });
+    response->setLength();
+    request->send(response);
+  });
 
-  server->on("/rawinput", HTTP_GET, [](AsyncWebServerRequest *request)
-             {
-                Serial.println("get /rawinput");
-                AsyncJsonResponse *response = new AsyncJsonResponse(false, 8196);
-                JsonObject root = response->getRoot();
-                makeDebugResponse(root, true);
-                response->setLength();
-                request->send(response); });
+  server->on("/rawinput", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("get /rawinput");
+    AsyncJsonResponse *response = new AsyncJsonResponse(false, 8196);
+    JsonObject root = response->getRoot();
+    makeDebugResponse(root, true);
+    response->setLength();
+    request->send(response);
+  });
 
-  server->onNotFound([](AsyncWebServerRequest *request)
-                     {
-                      Serial.println("got request to 404");
-                      request->send(404, "text/plain", "Not found"); });
+  server->onNotFound([](AsyncWebServerRequest *request) {
+    Serial.println("got request to 404");
+    request->send(404, "text/plain", "Not found");
+  });
 
   Serial.println("begin server...");
 
@@ -1060,11 +1077,9 @@ void serve(void *arg)
 }
 #endif
 
-extern "C"
-{
-  void app_main(void)
-  {
-    initArduino();
-    setup();
-  }
+extern "C" {
+void app_main(void) {
+  initArduino();
+  setup();
+}
 }

@@ -52,7 +52,7 @@ namespace Configlets
     void FloatValue::toJsonInner(JsonObject &json)
     {
         JsonObject data = json.createNestedObject(dtype());
-        data["value"] = _value;
+        data["value"] = value();
         data["max_value"] = _max_value;
         data["min_value"] = _min_value;
         data["step"] = _step;
