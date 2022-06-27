@@ -4,7 +4,7 @@
 #pragma once
 
 #include "Arduino.h"
-#include "bucketer.h"
+#include "bucketer_c.h"
 #include "fft.h"
 
 typedef struct {

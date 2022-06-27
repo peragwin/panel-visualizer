@@ -3,11 +3,11 @@ idf_component_register(
     "main.cpp"
     "../lib/Render/hsluv.cpp"
     "../lib/Render/Render.cpp"
-    "../lib/Audio/bucketer.cpp"
     "../lib/Audio/fft.cpp"
-    "../lib/Audio/FrequencySensor.cpp"
     "../lib/Configlets/Configlets.cpp"
 
+    # "../lib/Audio/bucketer.cpp"
+    # "../lib/Audio/FrequencySensor.cpp"
     INCLUDE_DIRS
     "."
     "../lib/Render"
