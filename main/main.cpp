@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#include <FastLED.h>
 #include <driver/i2s.h>
 
 #ifdef USE_RADIO
@@ -23,6 +24,7 @@
 #include <color.h>
 
 using namespace vuzicaudio;
+CRGB status_led;
 
 // #define VUZIC_REVA
 // #define VUZIC_REVB
@@ -287,6 +289,12 @@ auto render_fps = registry.newFloatValue("fps", "status");
 void setup() {
   Serial.begin(115200);
   pinMode(BUTTON_PIN, INPUT);
+  status_led = CRGB::DarkRed;
+#ifdef VUZIC32_REVA
+  pinMode(POW_KEY, INPUT_PULLUP);
+  FastLED.addLeds<NEOPIXEL, LED_OUT>(&status_led, 1);
+  FastLED.show();
+#endif
 
   xTaskCreatePinnedToCore(render, "render", 8192, NULL, 6, &render_task,
                           RENDER_TASK_CORE);
@@ -408,6 +416,7 @@ void render(void *arg) {
 
   int frameCount = 0;
   TickType_t fpsTime = xTaskGetTickCount();
+  TickType_t lastTime = xTaskGetTickCount();
 
   while (!analyzer) {
     vTaskDelay(10);
@@ -429,8 +438,12 @@ void render(void *arg) {
   vars.newFloatValue("lightness_offset", lightness_offset, 0.0, 1.0, 0.01);
   auto color_spread = make_shared<float>(120.0 / NUM_TYPES);
   vars.newFloatValue("color_spread", color_spread, 0.0, 60., 1.);
+  auto color_cycle_rate = make_shared<float>(0.5);
+  vars.newFloatValue("color_cycle_rate", color_cycle_rate, 0.0, 10.0, 0.01);
   auto fade_value = make_shared<float>(0.96);
   vars.newFloatValue("fade", fade_value, 0.0, 1.0, 0.01);
+
+  float color_cycle = 0.0;
 
   for (;;) {
     // fade display
@@ -449,13 +462,24 @@ void render(void *arg) {
     auto lo = *lightness_offset;
     auto csp = *color_spread;
     auto csc = *color_scale;
+
+    auto now = xTaskGetTickCount();
+    auto dt = float(now - lastTime) / 1000.0;
+    lastTime = now;
+    color_cycle += dt * *color_cycle_rate * 6.0; //  (360 / 60) to get bpm;
+
+#ifdef VUZIC32_REVA
+    status_led = CHSV(fmod(color_cycle / 360.0, 1.0) * 255, 255, 32);
+    FastLED.show();
+#endif
+
     for (int i = 0; i < NUM_BUCKETS; i++) {
       // auto aval = scale[i] * (audio[i] - 1.0f);
       auto aval = audio[i];
       auto cval = ls * sigmoid(aval) + lo;
 
       double r, g, b;
-      float hue = fmod(180 * csc * energy[i] / PI + csp * i, 360);
+      float hue = fmod(180 * csc * energy[i] / PI + csp * i + color_cycle, 360);
       if (hue < 0)
         hue += 360;
       hsluv2rgb(hue, 100., 100. * cval, &r, &g, &b);
@@ -515,7 +539,6 @@ void render(void *arg) {
       }
     }
 
-    TickType_t lastTime = xTaskGetTickCount();
     if (frameCount++ % 32 == 0) {
       auto e = 1000.0 / ((float)(lastTime - fpsTime) + 0.001);
       fpsTime = lastTime;
