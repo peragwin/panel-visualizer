@@ -19,6 +19,7 @@ idf_component_register(
     ArduinoJson
     ParticleLife
     ESP32-HUB75-MatrixPanel-I2S-DMA
+    FastLED
 
     # app_update
 )
