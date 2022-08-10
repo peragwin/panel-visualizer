@@ -1,6 +1,17 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+
+// #define VUZIC_REVA
+// #define VUZIC_REVB
+#define VUZIC32_REVA
+#define VUZIC_VGA
+
+#ifndef VUZIC_VGA
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#else
+#include <ESP32Lib.h>
+#endif
+
 #include <FastLED.h>
 #include <driver/i2s.h>
 
@@ -25,10 +36,6 @@
 
 using namespace vuzicaudio;
 CRGB status_led;
-
-// #define VUZIC_REVA
-// #define VUZIC_REVB
-#define VUZIC32_REVA
 
 #ifdef VUZIC_REVA
 
@@ -75,9 +82,19 @@ const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32,
 #define LED_OUT 33
 #define BUTTON_PIN B_BUTTON
 
+#ifdef VUZIC_VGA
+
+#define RED_PIN 16
+#define GREEN_PIN 17
+#define BLUE_PIN 5
+#define HSYNC_PIN 19
+#define VSYNC_PIN 18
+
+#else
 // int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
 const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {16, 17, 5,  19, 18, 21, 2,
                                                     4,  15, 13, -1, 26, 27, 25};
+#endif
 
 #endif
 
@@ -85,7 +102,7 @@ const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {16, 17, 5,  19, 18, 21, 2,
 #define DISPLAY_HEIGHT 32
 #define DISPLAY_BUFFER_SIZE (DISPLAY_WIDTH * DISPLAY_HEIGHT * 3 / 4)
 
-#define NUM_BUCKETS 6 // 16
+#define NUM_BUCKETS 5 // 16
 #define NUM_FRAMES 64
 
 #define AUDIO_I2S_NUM I2S_NUM_0
@@ -104,6 +121,7 @@ Registry registry;
 
 ColorRGB8 displayBuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT] = {ColorRGB8(0, 0, 0)};
 
+#ifndef VUZIC_VGA
 MatrixPanel_I2S_DMA *setupDisplay() {
   HUB75_I2S_CFG mxconfig(DISPLAY_WIDTH, DISPLAY_HEIGHT);
   mxconfig.driver = HUB75_I2S_CFG::FM6126A;
@@ -119,6 +137,23 @@ MatrixPanel_I2S_DMA *setupDisplay() {
   }
   return display;
 }
+#else
+VGA3Bit *setupDisplay() {
+  auto vga = new VGA3Bit();
+  vga->setFrameBufferCount(2);
+  vga->init(vga->MODE320x240, RED_PIN, GREEN_PIN, BLUE_PIN, HSYNC_PIN,
+            VSYNC_PIN);
+  return vga;
+}
+
+inline uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
+  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+#define THRESH 64
+inline uint16_t color111(uint8_t r, uint8_t g, uint8_t b) {
+  return ((r >= THRESH) << 2) | ((g >= THRESH) << 1) | (b >= THRESH);
+}
+#endif
 
 void HandleESPError(esp_err_t err, String msg) {
   if (err != ESP_OK) {
@@ -333,6 +368,7 @@ Render3 *renderer;
 int targetFrameTime = 6;
 
 #define NUM_TYPES NUM_BUCKETS
+#define NUM_PARTICLES 128
 
 void iterate(void *arg) {
   Universe *universe = (Universe *)arg;
@@ -403,7 +439,7 @@ void render(void *arg) {
     s->value() = seed;
   }
 
-  Universe universe(NUM_TYPES, 128, 64, 32, seed);
+  Universe universe(NUM_TYPES, NUM_PARTICLES, 64, 32, seed);
   universe.ReSeed(0.0, 0.04, 0.0, 4.0, 4.0, 16.0, 0.2, false);
   universe.ToggleWrap();
 
@@ -442,7 +478,7 @@ void render(void *arg) {
   vars.newFloatValue("lightness_scale", lightness_scale, 0.0, 2.0, 0.01);
   auto lightness_offset = make_shared<float>(0.5);
   vars.newFloatValue("lightness_offset", lightness_offset, 0.0, 1.0, 0.01);
-  auto color_spread = make_shared<float>(120.0 / NUM_TYPES);
+  auto color_spread = make_shared<float>(2.0 * 120.0 / NUM_TYPES);
   vars.newFloatValue("color_spread", color_spread, 0.0, 60., 1.);
   auto color_cycle_rate = make_shared<float>(0.5);
   vars.newFloatValue("color_cycle_rate", color_cycle_rate, 0.0, 10.0, 0.01);
@@ -451,14 +487,18 @@ void render(void *arg) {
 
   float color_cycle = 0.0;
 
+  const int vsync_delay = 1000 / 60;
+
   for (;;) {
-    // fade display
+// fade display
+#ifndef VUZIC_VGA
     uint16_t fade = 256 * *fade_value;
     for (auto &c : displayBuffer) {
       c.r = ((uint16_t)c.r * fade) >> 8;
       c.g = ((uint16_t)c.g * fade) >> 8;
       c.b = ((uint16_t)c.b * fade) >> 8;
     }
+#endif
 
     xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
 
@@ -496,46 +536,8 @@ void render(void *arg) {
       types->SetColor(i, ColorRGB(255 * r, 255 * g, 255 * b));
     }
 
+#ifndef VUZIC_VGA
     universe.IterParticles([](Particle &p, ColorRGB c) {
-      // static float kernel[3][3] = {
-      // {0.0, 0.1, 0.0}, {0.1, 0.9, 0.1}, {0.0, 0.1, 0.0}};
-      // {0.0, 0.0, 0.0},
-      // {0.0, 1.0, 0.0},
-      // {0.0, 0.0, 0.0}};
-      // float bilinear_sample_kernel(float x, float y, float sx, float sy) {
-      //   int px = int(x);
-      //   int py = int(y);
-      //   float dx = x - floor(x+sx);
-      //   float dy = y - floor(y+sy);
-      //   int qx = int(dx);
-      //   int qy = int(dy);
-      //   int i = 1 + (px - qx);
-      //   int j = 1 + (py - qy);
-
-      // }
-
-      //   auto x = p.x;
-      //   auto y = p.y;
-      //   auto x_i = int(x);
-      //   auto y_i = int(y);
-
-      //   auto is = x > 0 ? -1 : 0;
-      //   auto ie = x < DISPLAY_WIDTH - 1 ? 1 : 0;
-      //   auto js = y > 0 ? -1 : 0;
-      //   auto je = y < DISPLAY_HEIGHT - 1 ? 1 : 0;
-
-      //   for (int j = js; j < je; j++) {
-      //     for (int i = is; i < ie; i++) {
-      //       auto k = kernel[j][i];
-      //       float xf = x + float(i);
-      //       float yf = y + float(j);
-
-      //       auto idx = (x_i + i) + (y_i + j) * DISPLAY_WIDTH;
-      //       auto c1 = displayBuffer[idx];
-      //       auto c2 = ColorRGB8(c.r, c.g, c.b);
-      //       displayBuffer[idx] = c2.blend(c1, k);
-      //     }
-      //   }
       auto x_i = int(p.x);
       auto y_i = int(p.y);
       auto idx = (x_i) + (y_i)*DISPLAY_WIDTH;
@@ -548,6 +550,24 @@ void render(void *arg) {
         display->drawPixelRGB888(i, j, c.r, c.g, c.b);
       }
     }
+#else
+
+    // #else
+
+    //         // display->fillRect(i * xscale, j * yscale, xscale, yscale,
+    //         //                   color565(c.r, c.g, c.b));
+
+    // #endif
+    display->clear();
+    universe.IterParticles([display](Particle &p, ColorRGB c) {
+      const float xscale = 320.0 / DISPLAY_WIDTH;
+      const float yscale = 240.0 / DISPLAY_HEIGHT;
+      const int radius = 3;
+      display->fillEllipse(int(p.x * xscale), int(p.y * yscale), radius, radius,
+                           display->RGB(c.r, c.g, c.b));
+    });
+    display->show();
+#endif
 
     if (frameCount++ % 32 == 0) {
       auto e = 1000.0 / ((float)(lastTime - fpsTime) + 0.001);
@@ -555,7 +575,8 @@ void render(void *arg) {
       render_fps->value() = .9 * render_fps->value() + .1 * 32.0 * e;
     }
 
-    vPortYield();
+    // vPortYield();
+    vTaskDelayUntil(&now, vsync_delay);
   }
 }
 /*
