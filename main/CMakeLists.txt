@@ -21,6 +21,7 @@ idf_component_register(
     ParticleLife
     ESP32-HUB75-MatrixPanel-I2S-DMA
     FastLED
+    VGA
 
     # app_update
 )
