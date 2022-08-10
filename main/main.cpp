@@ -206,21 +206,23 @@ int rawBuffer[AUDIO_INPUT_FRAME_SIZE * 2];
 #endif
 long processTime = 0;
 
-Analyzer *analyzer;
+// Analyzer *analyzer;
+Audio_Processor_t *audioProcessor;
 
 TaskHandle_t audioUpdateTask;
 void processAudioUpdate(void *arg) {
 
-  analyzer =
-      new Analyzer(AUDIO_BUFFER_SIZE, AUDIO_BUFFER_SIZE, NUM_BUCKETS, registry);
+  // analyzer =
+  //     new Analyzer(AUDIO_BUFFER_SIZE, AUDIO_BUFFER_SIZE, NUM_BUCKETS,
+  //     registry);
 
-  // WindowBuffer<AUDIO_BUFFER_SIZE> audioBuffer;
+  WindowBuffer audioBuffer(AUDIO_BUFFER_SIZE);
 
   vector<float> convBuffer(AUDIO_INPUT_FRAME_SIZE);
-  // float frame[AUDIO_BUFFER_SIZE];
+  vector<float> frame(AUDIO_BUFFER_SIZE);
 
-  // audioProcessor = NewAudioProcessor(AUDIO_BUFFER_SIZE, NUM_BUCKETS,
-  // NUM_FRAMES, NULL);
+  audioProcessor =
+      NewAudioProcessor(AUDIO_BUFFER_SIZE, NUM_BUCKETS, NUM_FRAMES, NULL);
 
   setupI2S();
 
@@ -260,12 +262,12 @@ void processAudioUpdate(void *arg) {
     }
 #endif
 
-    // audioBuffer.push(convBuffer, AUDIO_INPUT_FRAME_SIZE);
-    // audioBuffer.get(frame, AUDIO_BUFFER_SIZE);
+    audioBuffer.push(convBuffer);
+    audioBuffer.get(frame);
 
-    // Audio_Process(audioProcessor, frame);
+    Audio_Process(audioProcessor, frame.data());
 
-    analyzer->process(convBuffer);
+    // analyzer->process(convBuffer);
 
     processTime = micros() - now;
   }
@@ -347,7 +349,7 @@ void iterate(void *arg) {
   float audio_coef[NUM_BUCKETS][NUM_TYPES];
   construct_audio_coefficients<NUM_BUCKETS, NUM_TYPES>(audio_coef);
 
-  auto audio_effect = make_shared<float>(1.0);
+  auto audio_effect = make_shared<float>(0.1);
   vars.newFloatValue("audio_effect", audio_effect, 0.0, 10.0, 0.05);
 
   bool reseed = false;
@@ -364,15 +366,18 @@ void iterate(void *arg) {
         last_reseed = now;
         randomSeed(esp_random());
         universe->ReSeed(0.0, 0.04, 0.0, 5.0, 5.0, 24.0, 0.2, false);
+        construct_audio_coefficients<NUM_BUCKETS, NUM_TYPES>(audio_coef);
       }
     }
 
-    auto &audio = analyzer->getOutput().value;
+    // auto &audio = analyzer->getOutput().value;
+    auto idx = audioProcessor->fs->columnIdx;
+    auto audio = audioProcessor->fs->drivers->amp[idx];
     auto some_constant = *audio_effect;
-    // auto scale = audioProcessor->fs->drivers->scales;
+    auto scale = audioProcessor->fs->drivers->scales;
     for (int i = 0; i < NUM_BUCKETS; i++) {
-      // auto aval = scale[i] * (audio[i] - 1.0f);
-      auto aval = audio[i];
+      auto aval = scale[i] * (audio[i] - 1.0f);
+      // auto aval = audio[i];
       auto a = min(max(aval, -4.0f), 4.0f);
       for (int j = 0; j < NUM_TYPES; j++) {
         types->SetAttract(
@@ -418,7 +423,8 @@ void render(void *arg) {
   TickType_t fpsTime = xTaskGetTickCount();
   TickType_t lastTime = xTaskGetTickCount();
 
-  while (!analyzer) {
+  // while (!analyzer) {
+  while (!audioProcessor) {
     vTaskDelay(10);
   }
 
@@ -456,8 +462,12 @@ void render(void *arg) {
 
     xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
 
-    auto &audio = analyzer->getOutput().value;
-    auto &energy = analyzer->getOutput().energy;
+    // auto &audio = analyzer->getOutput().value;
+    // auto &energy = analyzer->getOutput().energy;
+    auto idx = audioProcessor->fs->columnIdx;
+    auto audio = audioProcessor->fs->drivers->amp[idx];
+    auto scale = audioProcessor->fs->drivers->scales;
+    auto energy = audioProcessor->fs->drivers->energy;
     auto ls = *lightness_scale;
     auto lo = *lightness_offset;
     auto csp = *color_spread;
@@ -474,8 +484,8 @@ void render(void *arg) {
 #endif
 
     for (int i = 0; i < NUM_BUCKETS; i++) {
-      // auto aval = scale[i] * (audio[i] - 1.0f);
-      auto aval = audio[i];
+      auto aval = scale[i] * (audio[i] - 1.0f);
+      // auto aval = audio[i];
       auto cval = ls * sigmoid(aval) + lo;
 
       double r, g, b;
@@ -487,11 +497,11 @@ void render(void *arg) {
     }
 
     universe.IterParticles([](Particle &p, ColorRGB c) {
-      static float kernel[3][3] = {
-          // {0.0, 0.1, 0.0}, {0.1, 0.9, 0.1}, {0.0, 0.1, 0.0}};
-          {0.0, 0.0, 0.0},
-          {0.0, 1.0, 0.0},
-          {0.0, 0.0, 0.0}};
+      // static float kernel[3][3] = {
+      // {0.0, 0.1, 0.0}, {0.1, 0.9, 0.1}, {0.0, 0.1, 0.0}};
+      // {0.0, 0.0, 0.0},
+      // {0.0, 1.0, 0.0},
+      // {0.0, 0.0, 0.0}};
       // float bilinear_sample_kernel(float x, float y, float sx, float sy) {
       //   int px = int(x);
       //   int py = int(y);

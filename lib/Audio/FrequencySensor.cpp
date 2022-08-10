@@ -87,9 +87,9 @@ FS_Module_t *NewFrequencySensor(int size, int columns)
     FS_Config_t *config = (FS_Config_t *)malloc(sizeof(FS_Config_t));
     config->offset = 0.5;
     config->gain = 16;
-    config->diffGain = 0.2;
-    config->diffAbs = 0.5;
-    config->sync = 5e-3;
+    config->diffGain = 0.5;
+    config->diffAbs = 0.0;
+    config->sync = 0.98;
     config->mode = 1;
     config->preemph = 16;
     config->columnDivider = 1;
@@ -482,7 +482,7 @@ void apply_effects(FS_Module_t *f)
     for (int i = 0; i < f->size; i++)
     {
         amp[i] = ao + ag * amp[i];
-        ph = energy[i] + .001;
+        ph = energy[i];
         ph -= dg * ((1 - f->config->diffAbs) * diff[i] + f->config->diffAbs * (diff[i] < 0 ? -diff[i] : diff[i]));
         energy[i] = ph;
     }
@@ -490,6 +490,14 @@ void apply_effects(FS_Module_t *f)
 
 void apply_sync(FS_Module_t *f)
 {
+    float *energy = f->drivers->energy;
+    auto sync = f->config->sync;
+    for (int i = 0; i < f->size; i++)
+    {
+        energy[i] *= sync;
+    }
+    return;
+/*
     float *diffA = f->drivers->diff;
     for (int i = 1; i < f->size - 1; i++)
     {
@@ -566,6 +574,7 @@ void apply_sync(FS_Module_t *f)
         }
         mean = fmod(mean, 2 * PI);
     }
+    */
 }
 
 void apply_scaling(FS_Module_t *f, float *frame)

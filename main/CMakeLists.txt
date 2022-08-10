@@ -6,8 +6,9 @@ idf_component_register(
     "../lib/Audio/fft.cpp"
     "../lib/Configlets/Configlets.cpp"
 
-    # "../lib/Audio/bucketer.cpp"
-    # "../lib/Audio/FrequencySensor.cpp"
+    "../lib/Audio/bucketer.cpp"
+    "../lib/Audio/FrequencySensor.cpp"
+    "../lib/Audio/fast_log.cpp"
     INCLUDE_DIRS
     "."
     "../lib/Render"
