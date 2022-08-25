@@ -12,4 +12,4 @@
 	url = https://github.com/peragwin/particle-life-embedded
 [submodule "components/VGA/ESP32Lib"]
 	path = components/VGA/ESP32Lib
-	url = https://github.com/bitluni/ESP32Lib
+	url = https://github.com/peragwin/ESP32Lib
