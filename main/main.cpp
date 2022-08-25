@@ -3,7 +3,7 @@
 
 // #define VUZIC_REVA
 // #define VUZIC_REVB
-#define VUZIC32_REVA
+// #define VUZIC32_REVA
 #define VUZIC_VGA
 
 #ifndef VUZIC_VGA
@@ -68,6 +68,9 @@ const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32,
 
 #ifdef VUZIC32_REVA
 
+#define HAS_STATUS_LED
+#define HAS_POW_KEY
+
 #define I2S_PDM
 #define I2S_CLK 12
 #define I2S_DAT 14
@@ -82,19 +85,34 @@ const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {15, 16, 17, 18, 19, 21, 32,
 #define LED_OUT 33
 #define BUTTON_PIN B_BUTTON
 
-#ifdef VUZIC_VGA
-
-#define RED_PIN 16
-#define GREEN_PIN 17
-#define BLUE_PIN 5
-#define HSYNC_PIN 19
-#define VSYNC_PIN 18
-
-#else
 // int8_t r1, g1, b1, r2, g2, b2, a, b, c, d, e, lat, oe, clk;
 const HUB75_I2S_CFG::i2s_pins HUB75_DISPLAY_PINS = {16, 17, 5,  19, 18, 21, 2,
                                                     4,  15, 13, -1, 26, 27, 25};
+
 #endif
+
+#ifdef VUZIC_VGA
+
+#define HAS_STATUS_LED
+
+#define A_BUTTON 36
+#define J_BUTTON 39
+#define B_BUTTON 0
+#define BUTTON_PIN B_BUTTON
+#define LED_OUT 32
+#define YAXIS_PIN 34
+#define XAXIS_PIN 35
+
+#define I2S_PDM
+#define I2S_CLK 23
+#define I2S_DAT 22
+
+#define HSYNC_PIN 13
+#define VSYNC_PIN 12
+
+const int vga_red_pins[] = {33, 25, 26, 27, 14};
+const int vga_green_pins[] = {21, 19, 18, 5, 17};
+const int vga_blue_pins[] = {16, 4, 2, 15};
 
 #endif
 
@@ -138,11 +156,19 @@ MatrixPanel_I2S_DMA *setupDisplay() {
   return display;
 }
 #else
-VGA3Bit *setupDisplay() {
-  auto vga = new VGA3Bit();
-  vga->setFrameBufferCount(2);
-  vga->init(vga->MODE320x240, RED_PIN, GREEN_PIN, BLUE_PIN, HSYNC_PIN,
-            VSYNC_PIN);
+// VGA3Bit *setupDisplay() {
+//   auto vga = new VGA3Bit();
+//   vga->setFrameBufferCount(2);
+//   vga->init(vga->MODE320x240, RED_PIN, GREEN_PIN, BLUE_PIN, HSYNC_PIN,
+//             VSYNC_PIN);
+//   return vga;
+// }
+
+VGA14Bit *setupDisplay() {
+  auto vga = new VGA14Bit();
+  vga->setFrameBufferCount(1);
+  vga->init(vga->MODE320x240, vga_red_pins, vga_green_pins, vga_blue_pins,
+            HSYNC_PIN, VSYNC_PIN);
   return vga;
 }
 
@@ -327,8 +353,10 @@ void setup() {
   Serial.begin(115200);
   pinMode(BUTTON_PIN, INPUT);
   status_led = CRGB::DarkRed;
-#ifdef VUZIC32_REVA
+#ifdef HAS_POW_KEY
   pinMode(POW_KEY, INPUT_PULLUP);
+#endif
+#ifdef HAS_STATUS_LED
   FastLED.addLeds<NEOPIXEL, LED_OUT>(&status_led, 1);
   FastLED.show();
 #endif
@@ -491,13 +519,28 @@ void render(void *arg) {
 
   for (;;) {
 // fade display
+  uint16_t fade = 256 * *fade_value;
 #ifndef VUZIC_VGA
-    uint16_t fade = 256 * *fade_value;
     for (auto &c : displayBuffer) {
       c.r = ((uint16_t)c.r * fade) >> 8;
       c.g = ((uint16_t)c.g * fade) >> 8;
       c.b = ((uint16_t)c.b * fade) >> 8;
     }
+#else
+for (int y = 0; y < display->yres; y++) {
+  for (int x = 0; x < display->xres; x++) {
+    int c = display->backBuffer[y][x];
+    if (c == 0) continue;
+    int r = c & 0x1f;
+    int g = c & 0x3e0;
+    int b = c & 0x3c00;
+    r = ((r * fade) >> 8) & 0x1f;
+    g = ((g * fade) >> 8) & 0x3e0;
+    b = ((b * fade) >> 8) & 0x3c00;
+    display->dotFast(x, y, r | g | b);
+  }
+}
+
 #endif
 
     xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
@@ -518,7 +561,7 @@ void render(void *arg) {
     lastTime = now;
     color_cycle += dt * *color_cycle_rate * 6.0; //  (360 / 60) to get bpm;
 
-#ifdef VUZIC32_REVA
+#ifdef HAS_STATUS_LED
     status_led = CHSV(fmod(color_cycle / 360.0, 1.0) * 255, 255, 32);
     FastLED.show();
 #endif
@@ -558,7 +601,7 @@ void render(void *arg) {
     //         //                   color565(c.r, c.g, c.b));
 
     // #endif
-    display->clear();
+    // display->clear();
     universe.IterParticles([display](Particle &p, ColorRGB c) {
       const float xscale = 320.0 / DISPLAY_WIDTH;
       const float yscale = 240.0 / DISPLAY_HEIGHT;
